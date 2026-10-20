@@ -64,6 +64,19 @@ lifecycle, allowlist, log-review and test procedures.
 
 ## Deferred work
 
+### Subsequent project-reference change
+
+On 2026-10-20 the human requested read-only access to this project's source so
+Hermes can propose improvements through PRs, with human-only merge and local
+activation. This explicitly allows inspection of tracked infrastructure source.
+The live host checkout, credentials and administration files remain unmounted.
+Only a committed-source export at `/reference` is readable, and the Docker mount
+denies writes. A separate workspace Git checkout supports edits. GitHub identity
+provisioning and publication remain pending; no administrator credentials were
+made available to Hermes. See [the workflow](hermes-project-workflow.md).
+
+### Gateway and account work
+
 This slice will not patch or adopt an unmerged implementation of outbound
 Subscription Proxy support. In a later change, inspect the merged upstream
 implementation, pin it, qualify proxy routing including refresh/retry and failure

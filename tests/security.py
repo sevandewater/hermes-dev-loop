@@ -74,7 +74,9 @@ def validate_configuration(containers):
         "/home/hermes/.hermes/skills": "skills", "/home/hermes/tools": "tools",
     }
     assert writable == {dest: str(ROOT / "runtime/hermes" / source) for dest, source in expected.items()}, writable
-    assert len([mount for mount in hermes["Mounts"] if mount["Type"] == "bind"]) == len(expected)
+    assert len([mount for mount in hermes["Mounts"] if mount["Type"] == "bind"]) == len(expected) + 1
+    reference = next(mount for mount in hermes["Mounts"] if mount["Destination"] == "/reference")
+    assert reference["Source"] == str(ROOT / "runtime/reference") and not reference["RW"], reference
     gateway_mounts = containers["llm-gateway"]["Mounts"]
     assert any(mount["Source"] == str(ROOT / "runtime/gateway") and mount["Destination"] == "/var/lib/gateway" for mount in gateway_mounts)
     assert not any("runtime/hermes" in mount["Source"] for mount in gateway_mounts)
@@ -134,6 +136,8 @@ def main():
             assert path.read_text() == token
         record("Infrastructure/config/credential files and Docker socket unavailable to Hermes",
                lambda: inside("hermes", "protected", *map(str, files)))
+        record("Project reference readable, read-only and excludes host Git/config/runtime state",
+               lambda: inside("hermes", "reference"))
         record("Workspace, memory, skills, tools, executable Python/Node/C and Hermes CLI",
                lambda: inside("hermes", "development", token))
         command(["docker", "run", "-d", "--name", canary_name, "--network", external_network,

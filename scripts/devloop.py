@@ -16,6 +16,8 @@ import tempfile
 import time
 from urllib.parse import urlsplit, urlunsplit
 
+from scripts.project_reference import PROJECT_REPO, ReferenceError, publish as publish_reference
+
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = "hermes-dev-loop"
 SERVICES = ("hermes", "squid", "llm-gateway")
@@ -33,6 +35,7 @@ ACTIONS = {
     "doctor": "Diagnose setup and connectivity",
     "test": "Run security checks",
     "rebuild": "Rebuild pinned images and recreate services",
+    "project": "Inspect or refresh the read-only project reference",
     "help": "Show commands and examples",
 }
 
@@ -68,6 +71,24 @@ LOGOUT_CLEANUP = (
     "clear_provider_auth('nous'); _clear_shared_nous_state('devloop_logout'); "
     "assert not NousPortalAdapter().is_authenticated() and not _nous_shared_store_path().exists()"
 )
+
+PROJECT_CHECKOUT = r'''
+import pathlib, subprocess, sys
+target = pathlib.Path('/workspace/projects/hermes-dev-loop')
+target.parent.mkdir(parents=True, exist_ok=True)
+if target.exists() or target.is_symlink():
+    raise SystemExit('Checkout already exists; keep its work and inspect it from Hermes.')
+target.mkdir()
+def git(*args):
+    subprocess.run(['/usr/bin/git', '-c', 'core.hooksPath=/dev/null', '-C', str(target), *args], check=True)
+git('init', '--quiet', '--template=')
+git('remote', 'add', 'upstream', 'https://github.com/sevandewater/hermes-dev-loop.git')
+git('fetch', '--depth=1', 'upstream', sys.argv[1])
+git('checkout', '-b', 'hermes/improvement', 'FETCH_HEAD')
+git('config', 'user.name', 'Hermes')
+git('config', 'user.email', 'hermes@users.noreply.github.com')
+print('Writable checkout prepared at /workspace/projects/hermes-dev-loop. No GitHub credentials installed.')
+'''
 
 
 class Error(Exception):
@@ -366,9 +387,49 @@ class DevLoop:
         self._config = None
         self.config()
         self.runtime_check()
+        self.refresh_reference()
+
+    def refresh_reference(self):
+        try:
+            revision = publish_reference(self.root)
+        except ReferenceError as error:
+            raise Error(str(error)) from None
+        print(f"Read-only project reference prepared from committed HEAD {revision[:12]}.")
+
+    def project(self, refresh=False, checkout=False):
+        if not refresh and not checkout and terminal():
+            print("1. Show reference status\n2. Refresh from committed host source\n3. Prepare a new writable checkout")
+            choice = input("Project action [1]: ").strip() or "1"
+            if choice not in ("1", "2", "3"):
+                raise Error("Choose one of the listed project actions.")
+            refresh, checkout = choice == "2", choice == "3"
+        if refresh:
+            with self.administration():
+                self.refresh_reference()
+        manifest = self.root / "runtime/reference/hermes-dev-loop/.devloop-reference.json"
+        if not manifest.is_file():
+            raise Error("Project reference unavailable. Run ./devloop project --refresh, then ./devloop start.")
+        info = decoded(manifest.read_text(), "Project reference")
+        if info.get("repository") != PROJECT_REPO or not re.fullmatch(r"[0-9a-f]{40}", info.get("revision", "")):
+            raise Error("Invalid project reference identity. Run ./devloop project --refresh.")
+        print(f"Repository: {info['repository']}")
+        print(f"Reference commit: {info['revision']}")
+        print("Hermes can read /reference/hermes-dev-loop; changes belong in a separate /workspace checkout.")
+        print("GitHub PR publishing requires a separate bot identity without write access to the upstream repository.")
+        if checkout:
+            self.require_running("hermes", "squid")
+            with self.administration():
+                exists = self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-c",
+                                 "from pathlib import Path; p=Path('/workspace/projects/hermes-dev-loop'); print('yes' if p.exists() or p.is_symlink() else 'no')")
+                if exists == "yes":
+                    raise Error("Writable project checkout already exists; existing work was preserved.")
+                self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-", info["revision"],
+                        data=PROJECT_CHECKOUT, capture=False, timeout=120)
 
     def start_services(self):
         self.runtime_check()
+        if not (self.root / "runtime/reference/hermes-dev-loop/.devloop-reference.json").is_file():
+            self.refresh_reference()
         self.dc("up", "-d", capture=False, timeout=120)
         # The unauthenticated gateway is intentionally unhealthy, so wait only
         # for the development pair here. Login separately verifies the gateway.
@@ -563,6 +624,7 @@ class DevLoop:
         self.network_check()
         self.runtime_check()
         with self.administration():
+            self.refresh_reference()
             self.dc("build", capture=False, timeout=None)
             self.dc("up", "-d", "--force-recreate", capture=False, timeout=120)
             self.dc("up", "-d", "--wait", "--wait-timeout", "60", "squid", "hermes", capture=False, timeout=90)
@@ -589,6 +651,9 @@ def parser():
         elif name == "test":
             action.add_argument("--persistence", action="store_true", help="Recreate containers to check persistent storage")
             action.add_argument("--authenticated", action="store_true", help="Check the real provider model list after human login")
+        elif name == "project":
+            action.add_argument("--refresh", action="store_true", help="Export committed host HEAD; uncommitted and untracked files stay private")
+            action.add_argument("--checkout", action="store_true", help="Fetch the reference commit into a new writable /workspace checkout; preserves existing work")
     return result
 
 

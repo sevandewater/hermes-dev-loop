@@ -153,6 +153,24 @@ def main():
         subprocess.run(["python3", "-m", "venv", "/workspace/" + token + "-venv"], check=True)
         assert subprocess.check_output(["/workspace/" + token + "-venv/bin/pip", "--version"], text=True).startswith("pip ")
         subprocess.run(["hermes", "--help"], check=True, stdout=subprocess.DEVNULL)
+    elif task == "reference":
+        root = Path("/reference/hermes-dev-loop")
+        manifest = json.loads((root / ".devloop-reference.json").read_text())
+        assert manifest["repository"] == "sevandewater/hermes-dev-loop"
+        assert "services:" in (root / "compose.yaml").read_text()
+        assert (root / "scripts/devloop.py").is_file()
+        for forbidden in (".git", ".env", "runtime", ".ssh", ".aws", ".netrc"):
+            assert not (root / forbidden).exists(), forbidden
+        # Verify the mount boundary even though host and container share UID 1000.
+        for path in (root / "compose.yaml", Path("/reference/devloop-write-canary")):
+            try:
+                with path.open("a"):
+                    pass
+            except OSError as error:
+                import errno
+                assert error.errno == errno.EROFS, (path, error)
+            else:
+                raise AssertionError(f"Project reference accepted a write: {path}")
     elif task == "persistence":
         token = args[0]
         for root in ("/workspace", "/home/hermes/.hermes/memories", "/home/hermes/.hermes/skills", "/home/hermes/tools", "/home/hermes"):

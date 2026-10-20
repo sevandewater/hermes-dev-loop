@@ -74,6 +74,11 @@ services:
         source: ./runtime/hermes/tools
         target: /home/hermes/tools
         bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/reference
+        target: /reference
+        read_only: true
+        bind: {create_host_path: false}
     depends_on:
       squid: {condition: service_healthy}
 

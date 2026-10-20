@@ -1,8 +1,9 @@
 # Hermes DevLoop
 
 A Docker Compose foundation for supervised Hermes development. The agent can
-build its own tools in persistent storage while infrastructure and provider
-credentials stay outside its mounts. No unattended agent loop starts.
+build its own tools in persistent storage, inspect a read-only project source
+reference, and develop changes in a separate checkout. Live infrastructure and
+provider credentials stay outside its mounts. No unattended agent loop starts.
 
 Run **`./devloop`** for the interactive menu. First use follows **setup → login →
 choose a model → chat**. Login guides browser approval and model selection;
@@ -27,6 +28,7 @@ Every menu action is also available as a command:
 | `doctor` | Diagnose prerequisites, subnet conflicts, permissions and gateway/model-list connectivity |
 | `test` | Run security checks; `--persistence` explicitly recreates containers, `--authenticated` checks real model access |
 | `rebuild` | Build the pinned images and recreate services, retaining runtime data |
+| `project` | Show/refresh the read-only committed source reference, or prepare a separate writable checkout |
 | `help` | Show commands and examples |
 
 The host tool uses only Python's standard library. The selected model lives in
@@ -96,6 +98,7 @@ listens only on its inference-network address. No host ports are published.
 | `runtime/hermes/tools/` | Executable development tools at `/home/hermes/tools` |
 | `runtime/gateway/` | Gateway and human only; mounted at `/var/lib/gateway` in the gateway |
 | `runtime/devloop/` | Human-managed model preference and administration lock; never mounted into a service |
+| `runtime/reference/` | Human-exported committed project source, mounted read-only at `/reference`; excludes host Git metadata, local environment and runtime state |
 | `infrastructure/squid/` | Human-owned policy, mounted read-only into Squid |
 
 The whole `runtime/` tree and local `.env` files are Git-ignored. Separate bind
@@ -103,6 +106,38 @@ mounts expose only the listed paths, never the repository or runtime parent.
 All containers run as UID/GID 1000, with a read-only root, `no-new-privileges`,
 Docker's default seccomp profile, CPU/memory/process limits, and bounded log files.
 There is no Docker socket, Docker-in-Docker, privileged container, or host network.
+
+## Project access and proposed improvements
+
+Hermes can inspect `/reference/hermes-dev-loop`, an export of the host repository's
+committed HEAD. This includes the tracked infrastructure source for review, while
+the live host checkout remains outside its mounts. Uncommitted edits, untracked
+files, `.git`, local `.env` files and runtime credentials are excluded. Links and
+protected tracked paths cause export to fail rather than expose their targets.
+The Git-ignored export parent is mounted read-only, and host refreshes atomically
+switch the reference to a newly generated snapshot. Old snapshots remain available
+to existing readers; they can be cleaned up by the host administrator during downtime.
+
+Choose **project** from `./devloop` for reference status, refresh or checkout
+preparation. Setup and rebuild refresh the reference automatically. Direct commands:
+
+```bash
+./devloop project --refresh
+./devloop project --checkout
+```
+
+Checkout preparation fetches the reference commit over HTTPS into
+`/workspace/projects/hermes-dev-loop`, on branch `hermes/improvement`. An existing
+checkout is preserved and must be managed from Hermes. A writable checkout allows
+source edits; it does not grant control of the running infrastructure. Native
+Docker/Compose boundary tests still require a human host administrator.
+
+The intended remote workflow uses a separate GitHub bot account and its own fork.
+It must have no write/admin access to `sevandewater/hermes-dev-loop`. Hermes pushes
+proposals to that fork; the human reviews and merges upstream, pulls locally and
+explicitly applies the changes. **PR publishing has not been enabled or validated**:
+the bot identity and credential setup are still pending. No human GitHub credentials
+were copied into Hermes. See [the workflow and account requirements](docs/hermes-project-workflow.md).
 
 ## Prerequisites
 

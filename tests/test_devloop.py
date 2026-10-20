@@ -23,6 +23,7 @@ class DockerDouble:
         self.models = ["nous/model-a", "nous/model-b"]
         self.model_error = None
         self.fail_login = False
+        self.checkout_exists = False
         self.networks = []
         self.routes = [{"dst": "default", "dev": "eth0"}]
         self.config = {
@@ -69,6 +70,8 @@ class DockerDouble:
         if "logout" in command:
             self.logged_in = False
         if "-c" in command:
+            if "p.is_symlink()" in command[-1]:
+                return "yes" if self.checkout_exists else "no"
             if "print('yes'" in command[-1]:
                 return "yes" if self.logged_in else "no"
             return ""
@@ -92,6 +95,10 @@ class DevLoopTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy(devloop.ROOT / "scripts/init-runtime.py", self.root / "scripts/init-runtime.py")
         (self.root / ".env.example").write_text("HERMES_CPUS=2\n")
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "add", "scripts/init-runtime.py", ".env.example"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=DevLoop Test", "-c", "user.email=devloop@example.invalid",
+                        "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "Fixture source"], check=True)
         self.runner = DockerDouble()
         self.app = devloop.DevLoop(self.root, self.runner)
         self.output = io.StringIO()
@@ -134,6 +141,41 @@ class DevLoopTests(unittest.TestCase):
     def test_fresh_env_is_private(self):
         self.prepare()
         self.assertEqual((self.root / ".env").stat().st_mode & 0o777, 0o600)
+
+    def test_project_refresh_exports_only_committed_source(self):
+        self.prepare()
+        (self.root / ".env").write_text("private-local-value")
+        (self.root / "scripts/init-runtime.py").write_text("uncommitted-local-change")
+        self.app.project(refresh=True)
+        reference = self.root / "runtime/reference/hermes-dev-loop"
+        self.assertFalse((reference / ".env").exists())
+        self.assertFalse((reference / ".git").exists())
+        self.assertFalse((reference / "runtime").exists())
+        self.assertNotIn("uncommitted-local-change", (reference / "scripts/init-runtime.py").read_text())
+        self.assertIn("separate bot identity", self.output.getvalue())
+        self.assertFalse(any("up" in args for args in self.commands()))
+
+    def test_project_checkout_runs_only_inside_hermes(self):
+        self.prepare()
+        self.app.project(checkout=True)
+        calls = [(args, options) for args, options in self.runner.calls if options.get("data") == devloop.PROJECT_CHECKOUT]
+        self.assertEqual(len(calls), 1)
+        self.assertIn("hermes", calls[0][0])
+        self.assertIn("-I", calls[0][0])
+        self.assertFalse(any(args[0] == "git" for args, _ in self.runner.calls))
+
+    def test_project_checkout_refuses_existing_work_without_fetching_or_resetting(self):
+        self.prepare()
+        self.runner.checkout_exists = True
+        with self.assertRaisesRegex(devloop.Error, "existing work was preserved"):
+            self.app.project(checkout=True)
+        self.assertFalse(any(options.get("data") == devloop.PROJECT_CHECKOUT for _, options in self.runner.calls))
+
+    def test_project_menu_offers_reference_refresh(self):
+        self.prepare()
+        with patch("scripts.devloop.terminal", return_value=True), patch("builtins.input", return_value="2"):
+            self.app.project()
+        self.assertIn("Prepare a new writable checkout", self.output.getvalue())
 
     def test_model_survives_a_new_cli_instance_outside_agent_mounts(self):
         self.app.save_model("nous/model-a")

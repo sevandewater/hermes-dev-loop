@@ -4,6 +4,7 @@ The human administration CLI has standard-library regression tests:
 
 ```bash
 python3 -m unittest discover -s tests -p test_devloop.py -v
+python3 -m unittest discover -s tests -p test_project_reference.py -v
 python3 tests/check_gateway_logout.py
 ```
 
@@ -12,6 +13,11 @@ no external network or host state mounts. It verifies actual upstream logout,
 orphaned shared-store cleanup, launcher waiting behavior and isolated API probes
 using dummy credentials and loopback HTTP fixtures. It does not perform OAuth
 or modify the running gateway. See [CLI validation](../docs/devloop-validation.md).
+
+Project-reference tests use real temporary Git repositories to check committed
+exports, private-file exclusion, executable modes, refresh behavior, and rejection
+of tracked sensitive paths or links. The container suite additionally verifies
+actual read access and read-only mount enforcement at `/reference`.
 
 ## Foundation boundary suite
 
