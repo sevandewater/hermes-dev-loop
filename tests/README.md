@@ -1,4 +1,19 @@
-# Subscription Proxy transport diagnostic
+# DevLoop checks and Subscription Proxy diagnostic
+
+The human administration CLI has standard-library regression tests:
+
+```bash
+python3 -m unittest discover -s tests -p test_devloop.py -v
+python3 tests/check_gateway_logout.py
+```
+
+The second command uses the built gateway image in a disposable container with
+no external network or host state mounts. It verifies actual upstream logout,
+orphaned shared-store cleanup, launcher waiting behavior and isolated API probes
+using dummy credentials and loopback HTTP fixtures. It does not perform OAuth
+or modify the running gateway. See [CLI validation](../docs/devloop-validation.md).
+
+## Foundation boundary suite
 
 For the implemented foundation's boundary suite, run `python3 tests/security.py`.
 See the [main README](../README.md#security-validation) for fixtures, persistence
@@ -58,4 +73,6 @@ Observed: the actual upstream transport contacted the direct loopback listener,
 while the positive control contacted the proxy listener. Inference transport
 therefore ignores these environment settings at the reviewed source pin. This
 was an HTTP loopback diagnostic, not a deployed gateway or HTTPS CONNECT test.
-All foundation security-boundary and persistence tests remain unexecuted.
+The diagnostic itself did not execute foundation security-boundary or persistence
+tests. Subsequent [foundation validation](../docs/security-validation.md) and
+[CLI validation](../docs/devloop-validation.md) record those separate runs.

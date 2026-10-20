@@ -4,6 +4,43 @@ A Docker Compose foundation for supervised Hermes development. The agent can
 build its own tools in persistent storage while infrastructure and provider
 credentials stay outside its mounts. No unattended agent loop starts.
 
+Run **`./devloop`** for the interactive menu. First use follows **setup → login →
+choose a model → chat**. Login guides browser approval and model selection;
+subsequent sessions use the saved model.
+
+```bash
+./devloop
+```
+
+Every menu action is also available as a command:
+
+| Action | Behavior |
+| --- | --- |
+| `setup` | Check prerequisites/subnets, preserve existing configuration, prepare storage, build and start |
+| `start` / `stop` | Start or stop services while retaining data and credentials |
+| `status` | Show service health, login readiness, selected model and next step |
+| `login` / `logout` | Sign in through Nous, or clear only the gateway's local Nous authentication |
+| `models` | List account models and select a persistent default; `--list` and `--select MODEL_ID` also work |
+| `chat` | Launch interactive Hermes with the selected model; `--model MODEL_ID` overrides one session |
+| `shell` | Open a shell in the development workspace |
+| `logs` | Choose a service; optionally `--follow` and `--tail N` |
+| `doctor` | Diagnose prerequisites, subnet conflicts, permissions and gateway/model-list connectivity |
+| `test` | Run security checks; `--persistence` explicitly recreates containers, `--authenticated` checks real model access |
+| `rebuild` | Build the pinned images and recreate services, retaining runtime data |
+| `help` | Show commands and examples |
+
+The host tool uses only Python's standard library. The selected model lives in
+private `runtime/devloop/settings.json`, outside Hermes' mounts, and contains no
+credentials. Administration actions share a host-side lock; status and logs
+remain available. Existing `.env`, workspace, gateway state and unknown model
+settings are preserved. Setup creates `.env` from the example only if absent.
+
+`status` checks local gateway readiness without fetching models. It explicitly
+distinguishes stored credentials from verified provider access. `login`, `models`,
+`chat` and an authenticated `doctor` check the current provider model list;
+`chat` alone launches inference. Login, chat and shell require a real terminal.
+Invoking `./devloop` without a terminal prints help and exits.
+
 **Temporary exception approved by the human:** the stock LLM Subscription Proxy
 has direct outbound networking. It does not yet support the required outbound
 proxy routing. Its destinations are not independently filtered; a compromised
@@ -58,6 +95,7 @@ listens only on its inference-network address. No host ports are published.
 | `runtime/hermes/skills/` | Hermes skills at `/home/hermes/.hermes/skills` |
 | `runtime/hermes/tools/` | Executable development tools at `/home/hermes/tools` |
 | `runtime/gateway/` | Gateway and human only; mounted at `/var/lib/gateway` in the gateway |
+| `runtime/devloop/` | Human-managed model preference and administration lock; never mounted into a service |
 | `infrastructure/squid/` | Human-owned policy, mounted read-only into Squid |
 
 The whole `runtime/` tree and local `.env` files are Git-ignored. Separate bind
@@ -89,11 +127,7 @@ validation; configuration validation alone does not qualify them.
 From the repository root, as UID 1000:
 
 ```bash
-cp .env.example .env
-python3 scripts/init-runtime.py
-docker compose config --quiet
-docker compose build
-docker compose up -d
+./devloop setup
 ```
 
 Images use a digest-pinned Python base and Hermes source commit
@@ -115,7 +149,7 @@ Keep all login operations inside the gateway container. Do not authenticate the
 agent directly with Nous or copy your host Hermes home into either container.
 
 ```bash
-docker compose exec llm-gateway hermes auth add nous --type oauth --no-browser
+./devloop login
 ```
 
 Open the printed device verification URL in your own browser and approve the
@@ -127,29 +161,32 @@ The gateway sets `HERMES_HOME=/var/lib/gateway/hermes` and
 `nous_auth.json` remain in its private persistent mount. Upstream handles token
 refresh, locking, and restrictive atomic writes. The launcher uses umask 077.
 
-After successful login:
+The tool restarts the gateway, verifies a real provider model list, and prompts
+for a default model when needed. Then:
 
 ```bash
-docker compose restart llm-gateway
-docker compose ps
-python3 tests/security.py --authenticated
+./devloop status
+./devloop chat
 ```
 
-The optional authenticated check requests the real provider model list through
+The optional `./devloop test --authenticated` check requests the real provider model list through
 the gateway; it does not run a paid chat completion. Confirm your account's model
 entitlements before selecting a model. Nous access and OpenAI protocol
 compatibility do not establish access through a separate OpenAI authentication
 method. Real login, refresh, and inference require human participation and are
 not claimed by the credential-free test fixture.
 
-If authentication is revoked or expired, repeat login inside the gateway and
-restart it. Never log in while the test suite is running: it may be using a
-temporary gateway fixture or recreating the container.
+If authentication is revoked or expired, run `./devloop login` again. Use
+`./devloop logout` to clear local Nous credentials and the shared store; it
+preserves workspace and model preference. This does not promise browser-session
+sign-out or provider-side token revocation. Never log in while running the raw
+test script: it may use a temporary fixture or recreate the gateway. DevLoop
+serializes its own login/logout and test actions automatically.
 
 ## Development and service lifecycle
 
 ```bash
-docker compose exec hermes bash
+./devloop shell
 # In the container:
 cd /workspace
 python3 -m venv .venv
@@ -169,21 +206,19 @@ client key that upstream replaces. After human login, explicitly select a model
 from the provider model list and start an interactive session:
 
 ```bash
-docker compose exec hermes hermes chat --cli --provider custom \
-  --base-url http://10.237.81.2:8645/v1 --api-key unused \
-  --model YOUR_NOUS_MODEL_ID
+./devloop models
+./devloop chat
 ```
 
-Replace `YOUR_NOUS_MODEL_ID` with an entitled model from the real model list.
-`--cli` selects the classic REPL; this development image does not build the web
+DevLoop supplies the gateway endpoint and dummy client key; provider credentials
+stay in the gateway. It selects the classic REPL; this development image does not build the web
 dashboard or TypeScript TUI. No agent session, task scheduler, webhook, messaging
 gateway, or continuous engineering loop is started by Compose.
 
 ```bash
-docker compose stop            # stop services; retain containers and data
-docker compose start           # resume existing containers
-docker compose down            # remove this stack's containers and networks
-docker compose up -d           # recreate them; bind-mounted runtime data persists
+./devloop stop                 # retain data, credentials and model choice
+./devloop start                # start services and explain readiness
+./devloop rebuild              # rebuild pinned images and recreate services
 ```
 
 Back up `runtime/hermes/` as development data. Back up `runtime/gateway/`
@@ -202,8 +237,8 @@ Review package-download redirect hosts individually; avoid broad wildcard domain
 ```bash
 docker compose exec squid squid -k parse -f /etc/squid/devloop/squid.conf
 docker compose restart squid
-docker compose logs --tail 100 squid
-docker compose logs --tail 100 llm-gateway
+./devloop logs squid --tail 100
+./devloop logs llm-gateway --follow
 ```
 
 Squid logs timestamp, source, method, status, routing result, and destination IP;
@@ -211,7 +246,9 @@ it omits URLs, query strings, headers, and bodies. Docker rotates each service's
 logs at 10 MB with three retained files. The upstream proxy disables HTTP access
 logging; debug/OAuth trace logging must remain off. Review authentication failure
 logs locally and redact them before sharing. Upstream error redaction with real
-credentials remains an unverified acceptance check.
+credentials remains an unverified acceptance check. The DevLoop log viewer masks
+common bearer/token/key patterns and terminal escapes, but this is best-effort
+filtering rather than a guarantee for arbitrary upstream output.
 
 Keep special-use ranges in `prohibited-destinations.txt` denied. Add any host
 public addresses that could otherwise be reached through an approved hostname.
@@ -221,10 +258,10 @@ require rerunning the security suite.
 ## Security validation
 
 ```bash
-python3 tests/security.py
-python3 tests/security.py --persistence
+./devloop test
+./devloop test --persistence
 # After real human login:
-python3 tests/security.py --authenticated
+./devloop test --authenticated
 ```
 
 The suite needs host Docker administration access; Hermes receives none of that
@@ -240,6 +277,16 @@ only its own canaries; it never deletes existing runtime data. Concurrent runs
 are not supported. Results are written to ignored `runtime/security-results.json`.
 A failure returns nonzero; skipped checks and accepted exceptions are explicitly
 reported. See [executed results and remaining gaps](docs/security-validation.md).
+
+CLI regression tests and a separate credential-free upstream logout/probe check:
+
+```bash
+python3 -m unittest discover -s tests -p test_devloop.py -v
+python3 tests/check_gateway_logout.py
+```
+
+See [the CLI validation record](docs/devloop-validation.md) for executed checks
+and the remaining human account acceptance steps.
 
 ## Remaining risks
 

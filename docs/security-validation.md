@@ -2,6 +2,9 @@
 
 Run completed 2026-10-20 at 14:44 America/Toronto (18:44 UTC).
 
+The subsequent [DevLoop CLI validation](devloop-validation.md) records the updated
+gateway launcher, CLI checks and a repeated boundary/persistence run.
+
 ## Environment and result
 
 Native Linux host: Ubuntu 22.04.5 LTS, kernel 5.15.0-105-generic. Docker Engine
