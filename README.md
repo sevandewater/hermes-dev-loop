@@ -29,7 +29,7 @@ Every menu action is also available as a command:
 | `test` | Run security checks; `--persistence` explicitly recreates containers, `--authenticated` checks real model access |
 | `rebuild` | Build the pinned images and recreate services, retaining runtime data |
 | `project` | Show/refresh the read-only committed source reference, or prepare a separate writable checkout |
-| `github` | Prepare host-only GitHub App metadata and import a downloaded PEM; publishing remains disabled |
+| `github` | Configure the GitHub App, start its isolated MCP broker, or check reads and draft proposals |
 | `help` | Show commands and examples |
 
 The host tool uses only Python's standard library. The selected model lives in
@@ -62,6 +62,9 @@ flowchart LR
     Hermes[Hermes: idle development container]
     Squid[Squid: allowlisted HTTPS CONNECT]
     Hermes --> Squid
+    Broker[Optional GitHub MCP broker]
+    Hermes -->|Proposal tools| Broker
+    Broker -->|GitHub-only CONNECT policy| Squid
   end
   subgraph LLM[Isolated internal inference network]
     Gateway[Upstream Subscription Proxy]
@@ -71,6 +74,7 @@ flowchart LR
   State --> Gateway
   Gateway -->|Separate NAT network: temporary exception| Nous[Nous OAuth and inference]
   Hermes --> Writable[Workspace, home, memory, skills, tools]
+  AppKey[Private host GitHub App key] --> Broker
 ```
 
 Hermes joins two `internal` Docker bridges using `gateway_mode_ipv4: isolated`.
@@ -101,6 +105,7 @@ listens only on its inference-network address. No host ports are published.
 | `runtime/devloop/` | Human-managed model preference and administration lock; never mounted into a service |
 | `runtime/reference/` | Human-exported committed project source, mounted read-only at `/reference`; excludes host Git metadata, local environment and runtime state |
 | `infrastructure/squid/` | Human-owned policy, mounted read-only into Squid |
+| `~/.config/hermes-dev-loop/github-app.pem` and `github-app.json` | Owner-only host files, mounted read-only only into the optional GitHub broker |
 
 The whole `runtime/` tree and local `.env` files are Git-ignored. Separate bind
 mounts expose only the listed paths, never the repository or runtime parent.
@@ -133,34 +138,61 @@ checkout is preserved and must be managed from Hermes. A writable checkout allow
 source edits; it does not grant control of the running infrastructure. Native
 Docker/Compose boundary tests still require a human host administrator.
 
-The human has registered a dedicated GitHub App, `hermes-dev-loop-bot`, for remote
-proposals. A GitHub App is a separate identity and does not require a separate
-human bot account. **PR publishing has not been enabled or validated**: the isolated
-MCP broker, actual App authentication and human-only merge enforcement remain
-pending. No human GitHub credentials were copied into Hermes. See
-[the workflow](docs/hermes-project-workflow.md) and [App setup](docs/github-app-broker.md).
+The dedicated GitHub App `hermes-dev-loop-bot` supplies the separate proposal
+identity. Its optional broker uses GitHub's official MCP server for App
+authentication and token refresh. Hermes receives six project-scoped MCP tools;
+it receives neither the private key nor installation tokens. Reads work before
+writes are enabled. Every proposal write checks GitHub's effective rules for an
+active **Restrict updates** rule on `main`, with only human repository
+administrators allowed to bypass. An approval requirement alone is insufficient.
+The broker rejects writes to `main` and exposes no merge or approval operation.
+See [the workflow](docs/hermes-project-workflow.md) and [App setup](docs/github-app-broker.md).
 
 Choose **github** from `./devloop` for guided ID configuration and downloaded-key
 import, or run `./devloop github --setup`. The tool stores the App metadata and PEM
-in `~/.config/hermes-dev-loop/`, outside the repository and all current service
-mounts. The directory is mode `0700`; configuration and key files are `0600`.
+in `~/.config/hermes-dev-loop/`, outside the repository. Only the broker receives
+its two required files. The directory is mode `0700`; configuration and key files are `0600`.
 It rejects fingerprints, malformed/encrypted/non-RSA keys and symlinks, and never
 prints the key. Git ignores key files, and source exports reject key filenames
 and PEM private-key headers even if accidentally committed. This is additional
 protection against these key formats, not a general-purpose secret scanner.
 
+After credential setup, use the **github** submenu to start/register the broker
+and check the integration. Start a new Hermes chat to discover `github-devloop`.
+Direct equivalents are:
+
+```bash
+./devloop github --start
+./devloop github --check
+./devloop github --proposal-test  # creates a disposable draft PR only if protection passes
+```
+
+Once enabled, normal `start`, `stop` and `rebuild` include the broker. It has no
+default route, host port or workspace mount. Its Squid policy permits only
+`api.github.com` and `raw.githubusercontent.com`; Hermes cannot directly reach
+GitHub's API. Clients use `squid`, `llm-gateway-api` and `github-broker` DNS names.
+The gateway API alias exists only on the inference network; upstream uses it for
+both binding and Host-header validation. Fixed addresses remain in network
+assignments and enforcement policy.
+
+Validation on 2026-10-20 confirmed App-authenticated reads, six-tool discovery
+through the real Hermes client, and denied protected operations. Draft-PR
+creation remains blocked until the active `no-direct-main` ruleset also has
+**Restrict updates** and human-admin-only bypass. See [validation](docs/github-broker-validation.md).
+
 ## Prerequisites
 
 - A Linux Docker Engine **28 or newer**, with bridge firewalling enabled and
   support for isolated gateway mode. Tested versions are in the validation report.
-- Docker Compose v2 or newer, Python 3, and `iproute2` on the host for tests.
+- [Docker Compose 2.17 or newer](https://docs.docker.com/reference/compose-file/build/#additional_contexts), Python 3, and `iproute2` on the host for tests.
+- The optional broker artifact is pinned for Linux amd64.
 - Host user UID 1000. This initial slice fixes container ownership to that UID;
   changing it requires a coordinated image/Compose/runtime ownership update.
 - Internet access during image builds, enough disk for Hermes dependencies and
   development toolchains, and a Nous Portal account for real inference.
 - Unused `10.237.80.0/24` and `10.237.81.0/24` subnets. Docker rejects overlaps
   with its networks. Check LAN/VPN routes too before starting. These fixed
-  addresses appear in Compose, Squid policy, the gateway launcher, and tests;
+  addresses appear in Compose, Squid policy and tests;
   update them together if your host uses those ranges.
 
 This targets native Linux Docker. Docker Desktop, rootless Docker, modified
@@ -246,7 +278,7 @@ implementations through stdio or local ports without host file approvals.
 Tools must honor the HTTP proxy for external HTTPS access. A raw Node socket or
 client that ignores proxy settings will fail to connect directly.
 
-The inference endpoint in Hermes is `http://10.237.81.2:8645/v1`, with a dummy
+The inference endpoint in Hermes is `http://llm-gateway-api:8645/v1`, with a dummy
 client key that upstream replaces. After human login, explicitly select a model
 from the provider model list and start an interactive session:
 

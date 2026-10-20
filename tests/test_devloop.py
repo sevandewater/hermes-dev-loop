@@ -24,13 +24,15 @@ class DockerDouble:
         self.model_error = None
         self.fail_login = False
         self.checkout_exists = False
+        self.broker_running = False
         self.networks = []
         self.routes = [{"dst": "default", "dev": "eth0"}]
         self.config = {
             "services": {name: {} for name in devloop.SERVICES},
             "networks": {"development": {"internal": True, "ipam": {"config": [{"subnet": "10.237.80.0/24"}]}}},
         }
-        self.config["services"]["hermes"]["environment"] = {"OPENAI_BASE_URL": "http://10.237.81.2:8645/v1"}
+        self.config["services"]["hermes"]["environment"] = {"OPENAI_BASE_URL": "http://llm-gateway-api:8645/v1"}
+        self.config['services']['llm-gateway']['networks'] = {'inference': {'ipv4_address': '10.237.81.2'}}
 
     def run(self, args, **kwargs):
         self.calls.append((args, kwargs))
@@ -51,12 +53,15 @@ class DockerDouble:
         if args[:2] != ["docker", "compose"]:
             raise AssertionError(args)
         command = args[8:]
+        if command[:2] == ['--profile', 'github']:
+            command = command[2:]
         if command[:1] == ["config"]:
             return json.dumps(self.config)
         if command[:1] == ["version"]:
             return "5.5.1"
         if command[:1] == ["ps"]:
-            return "\n".join(json.dumps({"Service": name, "State": "running" if self.running else "exited", "Health": "healthy" if name == "squid" else ""}) for name in devloop.SERVICES)
+            names = devloop.SERVICES + (('github-broker',) if self.broker_running else ())
+            return "\n".join(json.dumps({"Service": name, "State": "running" if self.running else "exited", "Health": "healthy" if name == "squid" else ""}) for name in names)
         if command[:1] == ["up"]:
             self.running = True
         if command[:1] == ["stop"]:
@@ -181,7 +186,7 @@ class DevLoopTests(unittest.TestCase):
         store = devloop.AppSettings(self.root / 'private/github')
         with patch('scripts.devloop.AppSettings', return_value=store), patch('scripts.devloop.terminal', return_value=False):
             self.app.github()
-        self.assertIn('PR publishing disabled', self.output.getvalue())
+        self.assertIn('does not enable PR publishing', self.output.getvalue())
         self.assertEqual(self.runner.calls, [])
         self.assertFalse(store.directory.exists())
 
@@ -200,8 +205,53 @@ class DevLoopTests(unittest.TestCase):
             self.app.github(setup=True)
         self.assertEqual(store.load()['app_id'], '12345')
         self.assertEqual(store.load()['installation_id'], 173550314)
-        self.assertFalse(store.status()['publishing_enabled'])
+        self.assertNotIn('publishing_enabled', store.status())
         self.assertEqual(self.runner.calls, [])
+
+    def test_github_start_requires_credentials_before_docker_actions(self):
+        store = devloop.AppSettings(self.root / 'private/github')
+        with patch('scripts.devloop.AppSettings', return_value=store):
+            with self.assertRaisesRegex(devloop.Error, 'credential setup'):
+                self.app.github(start=True)
+        self.assertEqual(self.runner.calls, [])
+
+    def test_github_start_builds_isolated_broker_and_registers_without_remote_writes(self):
+        self.prepare()
+        info = {'app_id': '5402740', 'installation_id': 173550314, 'key_present': True, 'key_path': 'private/key.pem'}
+        with patch('scripts.devloop.AppSettings') as store:
+            store.return_value.status.return_value = info
+            self.app.github(start=True)
+        commands = self.commands()
+        self.assertIn(['--profile', 'github', 'build', 'github-broker'], commands)
+        configured = [options for _, options in self.runner.calls if options.get('data') == devloop.GITHUB_MCP_CONFIGURE]
+        self.assertEqual(len(configured), 1)
+        self.assertTrue((self.app.control / 'github-enabled').is_file())
+        self.assertFalse(any('check_github_broker.py' in str(args) for args, _ in self.runner.calls))
+
+    def test_github_checks_separate_read_only_from_explicit_canary_creation(self):
+        self.prepare()
+        self.runner.broker_running = True
+        store = devloop.AppSettings(self.root / 'private/github')
+        with patch('scripts.devloop.AppSettings', return_value=store):
+            self.app.github(check=True)
+            self.app.github(proposal_test=True)
+        checks = [args for args, _ in self.runner.calls if 'check_github_broker.py' in str(args)]
+        self.assertEqual(len(checks), 2)
+        self.assertNotIn('--proposal', checks[0])
+        self.assertIn('--proposal', checks[1])
+
+    def test_enabled_broker_participates_in_start_stop_and_rebuild(self):
+        self.prepare()
+        self.app.private_control()
+        (self.app.control / 'github-enabled').write_text('enabled\n')
+        self.app.start()
+        self.app.stop()
+        self.app.rebuild()
+        commands = self.commands()
+        self.assertIn(['--profile', 'github', 'stop'], commands)
+        self.assertTrue(any(args[:3] == ['--profile', 'github', 'up'] and 'github-broker' in args for args in commands))
+        self.assertIn(['--profile', 'github', 'build', 'github-broker'], commands)
+        self.assertFalse(any('down' in args for args in commands))
 
     def test_model_survives_a_new_cli_instance_outside_agent_mounts(self):
         self.app.save_model("nous/model-a")
@@ -327,7 +377,7 @@ class DevLoopTests(unittest.TestCase):
         chat = next(args for args in self.commands() if "chat" in args)
         self.assertEqual(chat[chat.index("--api-key") + 1], "unused")
         self.assertEqual(chat[chat.index("--model") + 1], "nous/model-b")
-        self.assertEqual(chat[chat.index("--base-url") + 1], "http://10.237.81.2:8645/v1")
+        self.assertEqual(chat[chat.index("--base-url") + 1], "http://llm-gateway-api:8645/v1")
         self.assertEqual(self.app.selected_model(), "nous/model-a")
 
     def test_stale_model_is_reselected_before_chat(self):

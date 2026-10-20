@@ -119,14 +119,14 @@ def main():
             assert response.status == 200
             assert b"pip" in response.read(4096).lower()
     elif task == "proxy-denied":
-        targets = ["example.com:443", "inference-api.nousresearch.com:443", "1.1.1.1:443", "pypi.org:80", "pypi.org:22"]
+        targets = ["example.com:443", "api.github.com:443", "inference-api.nousresearch.com:443", "1.1.1.1:443", "pypi.org:80", "pypi.org:22"]
         targets += [f"{ip}:443" for ip in ("127.0.0.1", "10.0.0.1", "169.254.169.254", "172.16.0.1", "192.168.1.1", "[::1]")]
         for target in targets:
             assert proxy_status(target) == 403, target
         assert proxy_status("http://pypi.org/", "GET") == 403
         assert proxy_status("example.com:443", headers="X-Forwarded-For: 10.237.80.3\r\n") == 403
     elif task == "protected":
-        for name in ("/var/run/docker.sock", "/run/docker.sock", "/var/lib/gateway", "/etc/squid/devloop", *args):
+        for name in ("/var/run/docker.sock", "/run/docker.sock", "/var/lib/gateway", "/broker-secrets", "/etc/squid/devloop", *args):
             assert not Path(name).exists(), name
         for name in ("/compose.yaml", "/infrastructure-canary", "/opt/hermes/devloop-write-canary"):
             try:
@@ -153,6 +153,32 @@ def main():
         subprocess.run(["python3", "-m", "venv", "/workspace/" + token + "-venv"], check=True)
         assert subprocess.check_output(["/workspace/" + token + "-venv/bin/pip", "--version"], text=True).startswith("pip ")
         subprocess.run(["hermes", "--help"], check=True, stdout=subprocess.DEVNULL)
+    elif task == "broker-egress":
+        assert proxy_status('api.github.com:443') == 200
+        for authority in ('pypi.org:443', 'inference-api.nousresearch.com:443', 'example.com:443', '127.0.0.1:443'):
+            assert proxy_status(authority) == 403, authority
+        assert Path('/broker-secrets/github-app.pem').is_file()
+        assert not Path('/var/run/docker.sock').exists()
+    elif task == "broker-network":
+        for line in Path('/proc/net/route').read_text().splitlines()[1:]:
+            assert line.split()[1] != '00000000', 'Broker has a default route'
+        # Linux keeps reject entries even when IPv6 is disabled. Reject routes
+        # cannot forward packets; any usable route or configured address fails.
+        for line in Path('/proc/net/ipv6_route').read_text().splitlines():
+            assert int(line.split()[8], 16) & 0x200, 'Broker has a usable IPv6 route'
+        assert not Path('/proc/net/if_inet6').read_text().strip(), 'Broker has an IPv6 address'
+        for scope in ('all', 'default'):
+            assert Path(f'/proc/sys/net/ipv6/conf/{scope}/disable_ipv6').read_text().strip() == '1'
+        status = Path('/proc/self/status').read_text()
+        assert 'CapEff:\t0000000000000000' in status and 'NoNewPrivs:\t1' in status
+        assert 'Seccomp:\t2' in status
+        assert Path('/proc/sys/net/ipv4/ip_forward').read_text().strip() == '0'
+        try:
+            socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError('Broker can open raw sockets')
     elif task == "reference":
         root = Path("/reference/hermes-dev-loop")
         manifest = json.loads((root / ".devloop-reference.json").read_text())
@@ -178,11 +204,19 @@ def main():
         assert subprocess.check_output(["/home/hermes/tools/" + token + ".py"], text=True).strip() == "development-tool-ok"
     elif task == "gateway":
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open("http://10.237.81.2:8645/health", timeout=5) as response:
+        assert socket.gethostbyname('llm-gateway-api') == '10.237.81.2'
+        with opener.open("http://llm-gateway-api:8645/health", timeout=5) as response:
             result = json.load(response)
             assert result["status"] == "ok"
+        request = urllib.request.Request('http://llm-gateway-api:8645/health', headers={'Host': 'untrusted.example:8645'})
+        try:
+            opener.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        else:
+            raise AssertionError('Gateway accepted a foreign Host name')
         if args and args[0] == "fixture":
-            request = urllib.request.Request("http://10.237.81.2:8645/v1/models", headers={"Authorization": "Bearer dummy-client"})
+            request = urllib.request.Request("http://llm-gateway-api:8645/v1/models", headers={"Authorization": "Bearer dummy-client"})
             with opener.open(request, timeout=5) as response:
                 data = json.load(response)
                 assert data["fixture"] and data["credential_attached"], data
@@ -196,7 +230,7 @@ def main():
             assert error.code in (401, 403), error.code
     elif task == "authenticated":
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        request = urllib.request.Request("http://10.237.81.2:8645/v1/models", headers={"Authorization": "Bearer unused"})
+        request = urllib.request.Request("http://llm-gateway-api:8645/v1/models", headers={"Authorization": "Bearer unused"})
         with opener.open(request, timeout=30) as response:
             data = json.load(response)
             assert isinstance(data.get("data"), list) and not data.get("fixture"), "Not a real provider model list"

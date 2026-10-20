@@ -3,12 +3,11 @@
 The human administration CLI has standard-library regression tests:
 
 ```bash
-python3 -m unittest discover -s tests -p test_devloop.py -v
-python3 -m unittest discover -s tests -p test_project_reference.py -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 tests/check_gateway_logout.py
 ```
 
-The second command uses the built gateway image in a disposable container with
+The gateway logout command uses the built gateway image in a disposable container with
 no external network or host state mounts. It verifies actual upstream logout,
 orphaned shared-store cleanup, launcher waiting behavior and isolated API probes
 using dummy credentials and loopback HTTP fixtures. It does not perform OAuth
@@ -82,3 +81,29 @@ was an HTTP loopback diagnostic, not a deployed gateway or HTTPS CONNECT test.
 The diagnostic itself did not execute foundation security-boundary or persistence
 tests. Subsequent [foundation validation](../docs/security-validation.md) and
 [CLI validation](../docs/devloop-validation.md) record those separate runs.
+
+## GitHub broker checks
+
+The local unit suite also covers RSA import/storage, public App-ID correction
+without key rotation, proposal branch/path/content policy, GitHub ruleset policy,
+and CLI broker activation/lifecycle. Disposable keys remain in temporary test
+directories; unit tests do not authenticate to GitHub.
+
+After `./devloop github --start`, run:
+
+```bash
+./devloop github --check
+./devloop github --proposal-test
+```
+
+The first runs the MCP client inside Hermes and verifies actual App-authenticated
+file/PR reads, the exact six-tool surface, unavailable merge tool, and rejected
+main/workflow/key-path operations. It sends no GitHub mutation. The second adds
+a disposable branch/commit/draft-PR canary, explicitly gated on active human-only
+update protection. It exits 2 when protection blocks creation; no real merge is
+ever attempted. Close a successfully created canary PR after inspection.
+
+The full `./devloop test --persistence` suite includes broker mounts, runtime
+permissions, routes/IPv6, GitHub-only Squid policy and direct TCP/DNS denial when
+the optional broker is running. It recreates Hermes and the gateway; use during
+supervised downtime. See [executed results](../docs/github-broker-validation.md).

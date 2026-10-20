@@ -35,7 +35,7 @@ async def main():
     await web.TCPSite(runner, "127.0.0.1", 18645).start()
     Path("/tmp/devloop-gateway-fixture.pid").write_text(str(os.getpid()))
     try:
-        await asyncio.wait_for(run_server(Adapter(), host="10.237.81.2", port=8645), 180)
+        await asyncio.wait_for(run_server(Adapter(), host="llm-gateway-api", port=8645), 180)
     finally:
         await runner.cleanup()
 

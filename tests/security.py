@@ -81,6 +81,12 @@ def validate_configuration(containers):
     assert any(mount["Source"] == str(ROOT / "runtime/gateway") and mount["Destination"] == "/var/lib/gateway" for mount in gateway_mounts)
     assert not any("runtime/hermes" in mount["Source"] for mount in gateway_mounts)
     assert all(not mount["RW"] for mount in containers["squid"]["Mounts"] if mount["Type"] == "bind")
+    if "github-broker" in containers:
+        broker = containers["github-broker"]
+        assert all(not mount["RW"] for mount in broker["Mounts"] if mount["Type"] == "bind")
+        assert {mount["Destination"] for mount in broker["Mounts"] if mount["Type"] == "bind"} == {
+            "/broker-secrets/github-app.pem", "/broker-secrets/github-app.json"}
+        assert len(broker["NetworkSettings"]["Networks"]) == 1
 
 
 def network_config(containers):
@@ -95,7 +101,10 @@ def network_config(containers):
         assert all(not entry.get("addr_info") for entry in addresses), f"Host bridge has an address: {bridge}"
         peers = {entry["Name"] for entry in network["Containers"].values()}
         expected_service = "squid" if name.endswith("_development") else "llm-gateway"
-        assert peers == {containers["hermes"]["Name"].lstrip("/"), containers[expected_service]["Name"].lstrip("/")}, peers
+        expected = {containers["hermes"]["Name"].lstrip("/"), containers[expected_service]["Name"].lstrip("/")}
+        if expected_service == "squid" and "github-broker" in containers:
+            expected.add(containers["github-broker"]["Name"].lstrip("/"))
+        assert peers == expected, peers
 
 
 class HostCanary(http.server.BaseHTTPRequestHandler):
@@ -121,10 +130,15 @@ def main():
     helper_started = False
     files = [ROOT / "infrastructure" / token, ROOT / "runtime/gateway" / token]
     containers = {service: inspect_container(service) for service in ("hermes", "squid", "llm-gateway")}
+    if command(COMPOSE + ["--profile", "github", "ps", "-q", "github-broker"]):
+        containers["github-broker"] = inspect_container("github-broker")
     record("Container permissions, resources, ports and actual mount isolation", lambda: validate_configuration(containers))
     record("Actual internal isolated networks and unnumbered host bridges", lambda: network_config(containers))
     record("No default/IPv6 routes, raw sockets, capabilities or route changes", lambda: inside("hermes", "routes"))
     record("Squid and gateway kernel forwarding disabled", lambda: [inside(service, "peer-forwarding") for service in ("squid", "llm-gateway")])
+    if "github-broker" in containers:
+        record("GitHub broker has no default/IPv6 route or network-administration capabilities", lambda: inside("github-broker", "broker-network"))
+        record("Broker-specific Squid policy permits GitHub and denies other destinations", lambda: inside("github-broker", "broker-egress"))
     external_network = next(name for name in containers["squid"]["NetworkSettings"]["Networks"] if name.endswith("_proxy_egress"))
     external = json.loads(command(["docker", "network", "inspect", external_network]))[0]
     host_address = external["IPAM"]["Config"][0]["Gateway"]
@@ -157,6 +171,9 @@ def main():
             before = command(["docker", "logs", canary_name])
             record("Hermes direct TCP internet path, alternate ports and UDP/TCP DNS blocked",
                    lambda: inside("hermes", "external-denied", target))
+            if "github-broker" in containers:
+                record("Broker direct TCP internet path and UDP/TCP DNS blocked with reachable canary",
+                       lambda: inside("github-broker", "external-denied", target))
             after = command(["docker", "logs", canary_name])
             record("No blocked Hermes requests received by reachable external canaries",
                    lambda: require(before == after, "Canary received Hermes traffic"))

@@ -127,3 +127,10 @@ login. The credential-free gateway fixture and external canary are stopped.
 Runtime state and the machine-readable report remain Git-ignored. Reproduce the
 checks using the README rather than treating this dated snapshot as current
 verification after future changes.
+
+## Subsequent GitHub broker integration
+
+The original run above predates the optional GitHub App MCP broker. Its key mount,
+GitHub-only Squid policy, service-name endpoints and repeated container tests are
+recorded separately in [GitHub broker validation](github-broker-validation.md).
+Historical exclusions above describe that earlier run, not the current tool set.

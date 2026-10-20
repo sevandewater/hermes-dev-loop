@@ -99,8 +99,8 @@ class AppSettings:
             value = str(app_id).strip()
             if not re.fullmatch(r"(?:[1-9][0-9]*|Iv[0-9A-Za-z.]+)", value):
                 raise AppError("Enter the numeric App ID or client ID from the App settings page.")
-            if data.get("app_id") and data["app_id"] != value and self.key.exists():
-                raise AppError("Changing the App identity with an installed key requires a separate rotation review.")
+            # Correcting public metadata does not rotate the key; GitHub verifies
+            # that the selected App actually owns its matching public key.
             data["app_id"] = value
         if installation_id is not None:
             value = str(installation_id).strip()
@@ -125,4 +125,4 @@ class AppSettings:
         if key_present and (self.key.stat().st_uid != os.getuid() or self.key.stat().st_mode & 0o077):
             raise AppError("GitHub App key must be owner-only (mode 0600).")
         return {"app_id": data.get("app_id"), "installation_id": data.get("installation_id"),
-                "key_present": key_present, "key_path": str(self.key), "publishing_enabled": False}
+                "key_present": key_present, "key_path": str(self.key)}

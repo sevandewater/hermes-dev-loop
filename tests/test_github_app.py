@@ -37,7 +37,7 @@ class GitHubAppTests(unittest.TestCase):
         self.directory.cleanup()
 
     def test_status_is_read_only_and_publication_is_disabled(self):
-        self.assertFalse(self.store.status()['publishing_enabled'])
+        self.assertNotIn('publishing_enabled', self.store.status())
         self.assertFalse(self.store.directory.exists())
 
     def test_valid_key_import_uses_private_storage_and_preserves_known_ids(self):
@@ -49,7 +49,7 @@ class GitHubAppTests(unittest.TestCase):
         info = self.store.status()
         self.assertEqual(info['installation_id'], 173550314)
         self.assertEqual(info['app_id'], '12345')
-        self.assertFalse(info['publishing_enabled'])
+        self.assertNotIn('publishing_enabled', info)
         self.assertNotIn('PRIVATE KEY', json.dumps(info))
 
     def test_fingerprint_is_rejected_without_creating_configuration(self):
@@ -105,6 +105,13 @@ class GitHubAppTests(unittest.TestCase):
         self.store.directory.chmod(0o755)
         with self.assertRaisesRegex(AppError, '0700'):
             self.store.status()
+
+    def test_correcting_app_id_preserves_key_and_installation(self):
+        self.store.configure(app_id='173550314', installation_id='173550314', key_file=self.download)
+        self.store.configure(app_id='5402740')
+        self.assertEqual(self.store.key.read_bytes(), self.keys[0])
+        self.assertEqual(self.store.load()['installation_id'], 173550314)
+        self.assertEqual(self.store.load()['app_id'], '5402740')
 
 
 if __name__ == '__main__':

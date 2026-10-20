@@ -43,7 +43,7 @@ that patch or the upstream PR's other behavior.
 
 ## Current architecture
 
-Compose contains the original three primary services. Only Squid and the gateway
+Compose contains three primary services and an optional GitHub broker. Only Squid and the gateway
 join their separate external NAT networks. Hermes joins two isolated internal
 bridges without host addresses or default routes. Both network-facing services
 have kernel IP forwarding disabled and no network-administration capabilities.
@@ -71,9 +71,9 @@ Hermes can propose improvements through PRs, with human-only merge and local
 activation. This explicitly allows inspection of tracked infrastructure source.
 The live host checkout, credentials and administration files remain unmounted.
 Only a committed-source export at `/reference` is readable, and the Docker mount
-denies writes. A separate workspace Git checkout supports edits. GitHub identity
-provisioning and publication remain pending; no administrator credentials were
-made available to Hermes. See [the workflow](hermes-project-workflow.md).
+denies writes. A separate workspace Git checkout supports edits. A separate GitHub App and isolated MCP broker provide proposal operations; no
+administrator credentials are made available to Hermes. Proposal writes stay
+blocked until GitHub enforces human-only updates to `main`. See [the workflow](hermes-project-workflow.md).
 
 ### Gateway and account work
 
@@ -89,3 +89,21 @@ inference, and credential redaction need deliberate account validation. The
 current fixture proves forwarding with dummy credentials; it does not establish
 any of these account-level outcomes. Autonomous execution and independently
 enforced inference budgets remain outside this milestone.
+
+### GitHub broker integration
+
+The human requested the App/broker integration and its live test. The optional
+`github-broker` service isolates the imported host App key from Hermes. It reuses
+the pinned Hermes MCP SDK and the checksum-pinned official GitHub MCP server
+v2.0.2, with native App authentication. A narrow policy adapter fixes the project,
+proposal branch namespace and draft PR base; no token issuer, merge operation
+or generic host runner was added. It has only the internal development network,
+no default route, and GitHub-only CONNECT egress through Squid. Client URLs now
+use service names. The gateway uses an inference-only `llm-gateway-api` DNS alias
+for its stock bind option and clients, preserving upstream Host-header validation
+and avoiding self-resolution to the egress interface. The existing gateway egress exception is unchanged.
+
+An active GitHub Restrict updates rule with human-admin-only bypass is required
+before every proposal write. This extends the isolation boundary to GitHub;
+review approval alone would leave the App able to merge with Contents write.
+See [design and setup](github-app-broker.md) and [validation](github-broker-validation.md).

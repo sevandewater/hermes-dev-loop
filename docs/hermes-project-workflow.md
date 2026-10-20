@@ -12,8 +12,8 @@ flowchart LR
   Reference --> Agent[Hermes inspects source]
   Upstream[GitHub upstream] -->|Fetch reference commit| Work[Writable workspace checkout]
   Agent --> Work
-  Work -. Bot authentication pending .-> Fork[Separate bot-owned fork]
-  Fork -. Proposed PR .-> Review[Human reviews and merges upstream]
+  Work -->|Submit changed files| Broker[Isolated GitHub App MCP broker]
+  Broker -->|Draft proposal on hermes/ branch| Review[Human reviews and merges upstream]
   Review -->|Human pulls and applies| Host
 ```
 
@@ -48,52 +48,34 @@ The original foundation is currently delivered in draft PR #1. Merge and pull
 the approved foundation before using `main` as the base of subsequent improvements;
 otherwise a proposal may unintentionally include the entire unmerged foundation.
 
-## GitHub identity required before publishing
+## GitHub proposals through the App
 
-The human has now created and installed `hermes-dev-loop-bot`, a dedicated GitHub
-App. This provides a separate identity without requiring another human GitHub
-account. [App credential setup and the planned MCP broker](github-app-broker.md)
-supersede the bot-account setup below. Remote publishing remains disabled until
-the actual App ID/key, restricted broker and human-only merge enforcement have
-been validated. The host's existing administrative GitHub identity is not reused.
+The separate identity is `hermes-dev-loop-bot`, installed only for this project.
+The [isolated broker](github-app-broker.md) holds its App key and delegates
+authentication to GitHub's maintained MCP server. Hermes receives six restricted
+MCP tools through `github-devloop`, with no key, installation token, merge tool,
+approval tool, generic API or host execution access.
 
-The previously proposed public-repository fork workflow was:
+Start/register the broker using the **github** submenu in `./devloop`, then start
+a new Hermes chat. The broker can read repository files and PRs immediately.
+Before proposal writes, its live policy requires an effective **Restrict updates**
+rule on `main`, with human administrators as the only bypass actors. Human review
+alone does not remove the App's underlying Contents-write merge permission.
 
-1. Create or choose a dedicated GitHub bot account with no access to unrelated
-   private repositories. The human retains account recovery and administration.
-2. Fork `sevandewater/hermes-dev-loop` into that account. The bot writes only its
-   fork's proposal branches as part of this workflow.
-3. Keep the bot out of the upstream repository's collaborators and write/admin
-   roles. A rule requiring a human review alone does not remove merge permission
-   after that review; the bot must lack upstream write authority entirely.
-4. Provision authentication locally under the bot identity. Do not paste tokens
-   into chat or copy the human's SSH agent, credential helper or GitHub session.
-   Credential delivery and automated PR publication require implementation and
-   explicit validation after the bot identity is known.
-5. Verify the authenticated actor is the intended bot, the fork's parent is the
-   expected upstream, fork push is permitted, and upstream push/admin permissions
-   are absent. Only then enable fork pushes and PR creation. Do not test the merge
-   restriction by attempting to merge a real PR.
+For an improvement, inspect the reference, develop and test in the workspace,
+then create a `hermes/` proposal branch from `main`, submit changed text files
+with `commit_proposal_files`, and open a draft through
+`open_proposal_pull_request`. Local workspace Git operations do not receive App
+credentials: publication happens through MCP rather than authenticated Git push.
+Tools fix the owner/repository/base and reject protected files and workflow
+changes. The first foundation PR should be merged by the human before proposals
+against `main`; otherwise `main` lacks the code in the feature reference.
 
-GitHub supports [PRs from forks](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/creating-a-pull-request-from-a-fork).
-Its API distinguishes
-[PR creation permissions from merge permissions](https://docs.github.com/en/rest/pulls/pulls):
-the fine-grained merge endpoint requires Contents write. Token permissions do not
-grant rights beyond the underlying account. A fork owned by the same human
-administrator would not establish the intended identity boundary.
-
-There is a current credential-design constraint:
-[fine-grained PATs have limitations for contributions to public repositories outside their owner's membership](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
-Do not assume a token scoped only to the fork can also create the upstream PR.
-Select and verify the authentication method for both operations before enabling
-publishing; a classic bot token has broader scope, while an App needs a separately
-reviewed installation/permission design. Neither method should expose the human's
-existing account credentials.
-
-The default egress allowlist currently omits `api.github.com`. Git clone/fetch
-works through `github.com`; API-based PR publishing will need an explicit,
-reviewed allowlist addition and repeated proxy/network checks. No API access was
-added as part of preparing the source reference.
+`./devloop github --check` verifies actual reads and denial paths without remote
+mutation. `./devloop github --proposal-test` explicitly creates a disposable
+branch/commit/draft PR only if GitHub protection passes. Close the canary after
+verification; never merge it as a test. Current protection and executed tests are
+recorded in [broker validation](github-broker-validation.md).
 
 ## Human review and activation
 
@@ -112,26 +94,11 @@ Hermes' existing writable home, tools, skills and workspace remain writable duri
 a session. This workflow gates adoption of host project changes; it does not make
 every agent-owned tool or configuration edit require a PR.
 
-## Executed local validation
+## Validation
 
-On 2026-10-20, all **40 local unit tests passed**, including real Git archive
-exports that exclude uncommitted/untracked files, preserve executable modes,
-reject committed private paths and links, and preserve the previous reference
-after a rejected refresh. CLI tests cover project refresh, menu access and
-container-only checkout orchestration alongside the existing administration cases.
-
-Live `./devloop project --refresh`, service recreation with the read-only mount,
-and `./devloop project --checkout` passed. The checkout fetched the public source
-commit into its own Git repository without host Git state or GitHub credentials.
-
-`./devloop test --persistence` exited zero with **25 passing check groups**, one
-skipped real-account group and the existing accepted gateway egress exception.
-The new group read the project source and confirmed EROFS on both an existing
-source file and attempted creation under `/reference`; sensitive paths were absent.
-The original network and writable-storage persistence checks also passed.
-
-This run used an existing authenticated gateway for its local health check;
-it did not perform OAuth, request a chat completion or claim provider refresh
-validation. No bot credentials, fork pushes, PR creation or GitHub permission
-denial tests have run. The merge restriction is a requirement of the pending
-GitHub setup, not a control established by the local source mount.
+Committed-source exports, read-only mounts, writable independent checkout,
+isolated App authentication, exact tool discovery, denied operations and
+container boundaries have separate checks. See [foundation validation](security-validation.md)
+for the original run and [broker validation](github-broker-validation.md) for the
+current integration. Read success does not establish proposal creation or token
+refresh; those outcomes are recorded separately.

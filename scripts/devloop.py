@@ -22,6 +22,7 @@ from scripts.github_app import AppError, AppSettings
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = "hermes-dev-loop"
 SERVICES = ("hermes", "squid", "llm-gateway")
+OPTIONAL_SERVICES = ("github-broker",)
 ACTIONS = {
     "setup": "Prepare, build and start DevLoop (safe to rerun)",
     "start": "Start services",
@@ -37,7 +38,7 @@ ACTIONS = {
     "test": "Run security checks",
     "rebuild": "Rebuild pinned images and recreate services",
     "project": "Inspect or refresh the read-only project reference",
-    "github": "Prepare host-only GitHub App credentials (publishing pending)",
+    "github": "Configure, start or test the isolated GitHub MCP broker",
     "help": "Show commands and examples",
 }
 
@@ -92,6 +93,29 @@ git('config', 'user.email', 'hermes@users.noreply.github.com')
 print('Writable checkout prepared at /workspace/projects/hermes-dev-loop. No GitHub credentials installed.')
 '''
 
+GITHUB_MCP_CONFIGURE = r'''
+import pathlib, sys
+sys.path.insert(0, '/opt/hermes')
+from hermes_cli.config import load_config
+from hermes_cli.mcp_config import _save_mcp_server
+path = pathlib.Path('/home/hermes/.hermes/config.yaml')
+if path.is_symlink() or path.parent.is_symlink():
+    raise SystemExit('Refusing symlinked Hermes configuration.')
+config = load_config()
+if not isinstance(config, dict):
+    raise SystemExit('Hermes configuration is not a mapping; it was preserved.')
+servers = config.setdefault('mcp_servers', {})
+if not isinstance(servers, dict):
+    raise SystemExit('MCP server configuration is not a mapping; it was preserved.')
+entry = servers.get('github-devloop', {})
+if not isinstance(entry, dict) or entry.get('url', 'http://github-broker:8000/mcp') != 'http://github-broker:8000/mcp':
+    raise SystemExit('Another github-devloop endpoint already exists; configuration was preserved.')
+entry.update({'url': 'http://github-broker:8000/mcp', 'connect_timeout': 20})
+if not _save_mcp_server('github-devloop', entry):
+    raise SystemExit('Hermes rejected the MCP registration; existing configuration was preserved.')
+print('Registered github-devloop MCP at http://github-broker:8000/mcp. Start a new Hermes chat to discover its tools.')
+'''
+
 
 class Error(Exception):
     pass
@@ -117,7 +141,7 @@ def redact(line):
 
 
 class Runner:
-    def run(self, args, *, capture=True, data=None, timeout=30, label="Command", interactive=False):
+    def run(self, args, *, capture=True, data=None, timeout=30, label="Command", interactive=False, failure_messages=None):
         try:
             if interactive:
                 # Leave Ctrl-C with Docker/the interactive application while it owns the terminal.
@@ -136,6 +160,8 @@ class Runner:
         except subprocess.TimeoutExpired:
             raise Error(f"{label} timed out. Run ./devloop doctor to inspect the current state.") from None
         if result.returncode:
+            if failure_messages and result.returncode in failure_messages:
+                raise Error(failure_messages[result.returncode])
             problem = (result.stderr or "").lower()
             if args[0] == "docker" and "permission denied" in problem:
                 raise Error("Docker access denied for this user. Check access to the Docker daemon socket.")
@@ -265,7 +291,7 @@ class DevLoop:
             rows = decoded(output, "Service status")
         else:
             rows = [decoded(line, "Service status") for line in output.splitlines() if line.strip()]
-        return {row["Service"]: row for row in rows if row.get("Service") in SERVICES}
+        return {row["Service"]: row for row in rows if row.get("Service") in SERVICES + OPTIONAL_SERVICES}
 
     def require_running(self, *services):
         rows = self.services()
@@ -297,7 +323,7 @@ class DevLoop:
 
     def status(self):
         rows = self.services()
-        for name in SERVICES:
+        for name in SERVICES + tuple(name for name in OPTIONAL_SERVICES if name in rows):
             row = rows.get(name, {})
             print(f"{name}: {row.get('State', 'not created')}" + (f" ({row['Health']})" if row.get("Health") else ""))
         selected = self.selected_model()
@@ -329,11 +355,11 @@ class DevLoop:
             raise Error("Rootless Docker is not qualified for this foundation.")
         compose = self.dc("version", "--short").lstrip("v")
         try:
-            compose_major = int(compose.split(".")[0])
+            compose_version = tuple(int(part) for part in compose.split(".")[:2])
         except ValueError:
             raise Error("Unable to determine Docker Compose version.") from None
-        if compose_major < 2:
-            raise Error("Docker Compose v2 or newer is required.")
+        if compose_version < (2, 17):
+            raise Error("Docker Compose 2.17 or newer is required for service build contexts.")
         self.config()
         print(f"Docker Engine {version['Version']}; Compose {compose}; configuration valid.")
 
@@ -417,7 +443,7 @@ class DevLoop:
         print(f"Repository: {info['repository']}")
         print(f"Reference commit: {info['revision']}")
         print("Hermes can read /reference/hermes-dev-loop; changes belong in a separate /workspace checkout.")
-        print("GitHub PR publishing is disabled pending the isolated App broker and verified human-only merge controls.")
+        print("GitHub proposals use the isolated App broker; check live access with ./devloop github.")
         if checkout:
             self.require_running("hermes", "squid")
             with self.administration():
@@ -428,15 +454,16 @@ class DevLoop:
                 self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-", info["revision"],
                         data=PROJECT_CHECKOUT, capture=False, timeout=120)
 
-    def github(self, setup=False):
+    def github(self, setup=False, start=False, check=False, proposal_test=False):
         store = AppSettings()
         try:
-            if not setup and terminal():
-                print("1. Show GitHub App setup status\n2. Configure App IDs and import a downloaded PEM")
+            if not any((setup, start, check, proposal_test)) and terminal():
+                print("1. Show GitHub App setup status\n2. Configure App IDs and import a downloaded PEM\n3. Start broker and register Hermes MCP\n4. Check real MCP reads and denied operations\n5. Test draft PR creation (creates a canary only when protection passes)")
                 choice = input("GitHub action [1]: ").strip() or "1"
-                if choice not in ("1", "2"):
+                if choice not in ("1", "2", "3", "4", "5"):
                     raise Error("Choose one of the listed GitHub actions.")
                 setup = choice == "2"
+                start, check, proposal_test = choice == "3", choice == "4", choice == "5"
             if setup:
                 require_terminal("github")
                 previous = store.load()
@@ -454,7 +481,28 @@ class DevLoop:
         print(f"App ID: {info['app_id'] or 'not configured'}")
         print(f"Installation ID: {info['installation_id'] or 'not configured'}")
         print(f"Private key: {'stored locally' if info['key_present'] else 'not imported'} ({info['key_path']})")
-        print("PR publishing disabled: broker integration and human-only merge enforcement still require validation.")
+        if start:
+            if not all((info['app_id'], info['installation_id'], info['key_present'])):
+                raise Error("Complete GitHub App credential setup before starting the broker.")
+            self.prerequisites()
+            self.network_check()
+            self.require_running('hermes', 'squid')
+            with self.administration():
+                self.dc('--profile', 'github', 'build', 'github-broker', capture=False, timeout=None)
+                self.dc('--profile', 'github', 'up', '-d', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
+                self.dc('exec', '-T', 'hermes', '/opt/hermes/.venv/bin/python', '-I', '-', data=GITHUB_MCP_CONFIGURE)
+                (self.control / 'github-enabled').write_text('enabled\n')
+            print('Broker started and registered. Start a new Hermes chat to discover its tools. Writes require an active human-only update rule; use Check integration.')
+        elif check or proposal_test:
+            self.require_running('hermes', 'github-broker')
+            args = [sys.executable, str(self.root / 'tests/check_github_broker.py')]
+            if proposal_test:
+                args.append('--proposal')
+            with self.administration():
+                self.runner.run(args, capture=False, timeout=150, label='GitHub broker integration', failure_messages={
+                    2: 'Proposal test blocked: enable Restrict updates on main with Repository admin as the only bypass actor, then retry.'})
+        else:
+            print('Credential storage alone does not enable PR publishing. Start the broker, then check its live policy.')
 
     def start_services(self):
         self.runtime_check()
@@ -464,6 +512,8 @@ class DevLoop:
         # The unauthenticated gateway is intentionally unhealthy, so wait only
         # for the development pair here. Login separately verifies the gateway.
         self.dc("up", "-d", "--wait", "--wait-timeout", "60", "squid", "hermes", capture=False, timeout=90)
+        if (self.control / 'github-enabled').is_file():
+            self.dc('--profile', 'github', 'up', '-d', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
 
     def setup(self):
         self.prerequisites()
@@ -484,7 +534,8 @@ class DevLoop:
 
     def stop(self):
         with self.administration():
-            self.dc("stop", capture=False, timeout=90)
+            options = ('--profile', 'github', 'stop') if (self.control / 'github-enabled').is_file() else ('stop',)
+            self.dc(*options, capture=False, timeout=90)
         print("Services stopped. Workspace, login and model preference preserved.")
 
     def models_available(self):
@@ -591,7 +642,7 @@ class DevLoop:
 
     def logs(self, service=None, follow=False, tail=100):
         if service is None and terminal():
-            choices = ("all", *SERVICES)
+            choices = ("all", *SERVICES, *OPTIONAL_SERVICES)
             for index, name in enumerate(choices, 1):
                 print(f"{index}. {name}")
             answer = input("Service [1]: ").strip() or "1"
@@ -658,6 +709,9 @@ class DevLoop:
             self.dc("build", capture=False, timeout=None)
             self.dc("up", "-d", "--force-recreate", capture=False, timeout=120)
             self.dc("up", "-d", "--wait", "--wait-timeout", "60", "squid", "hermes", capture=False, timeout=90)
+            if (self.control / 'github-enabled').is_file():
+                self.dc('--profile', 'github', 'build', 'github-broker', capture=False, timeout=None)
+                self.dc('--profile', 'github', 'up', '-d', '--force-recreate', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
         print("Pinned images rebuilt; services recreated. Runtime data and model preference preserved.")
         self.status()
 
@@ -675,7 +729,7 @@ def parser():
         elif name == "chat":
             action.add_argument("--model", help="Use an available model for this session only")
         elif name == "logs":
-            action.add_argument("service", nargs="?", choices=("all", *SERVICES))
+            action.add_argument("service", nargs="?", choices=("all", *SERVICES, *OPTIONAL_SERVICES))
             action.add_argument("--follow", "-f", action="store_true")
             action.add_argument("--tail", type=int, default=100, choices=range(1, 10001), metavar="N")
         elif name == "test":
@@ -685,7 +739,11 @@ def parser():
             action.add_argument("--refresh", action="store_true", help="Export committed host HEAD; uncommitted and untracked files stay private")
             action.add_argument("--checkout", action="store_true", help="Fetch the reference commit into a new writable /workspace checkout; preserves existing work")
         elif name == "github":
-            action.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
+            group = action.add_mutually_exclusive_group()
+            group.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
+            group.add_argument("--start", action="store_true", help="Build/start the isolated broker and register its MCP endpoint in Hermes")
+            group.add_argument("--check", action="store_true", help="Test real MCP reads and denial paths without creating a proposal")
+            group.add_argument("--proposal-test", action="store_true", help="Create a disposable draft PR only when human-only merge protection passes")
     return result
 
 
