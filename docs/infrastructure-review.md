@@ -1,6 +1,6 @@
 # Infrastructure foundation: architectural review
 
-Reviewed on 2026-10-20. Status: **decision required before implementation**.
+Reviewed on 2026-10-20. Status: **waiting for upstream proxy support**.
 
 ## Decision
 
@@ -15,11 +15,19 @@ claim that secure network isolation is impossible. No alternative authentication
 broker, transport modification, host firewall rule, or deployable Compose file
 has been implemented.
 
-**Recommended decision:** permit the small, pinned transport patch below, retain
-the upstream Nous authentication and refresh implementation, and enforce egress
-through Squid using internal-only gateway networks. This introduces a maintained
-upstream patch; its compatibility and security boundaries must be tested before
-the foundation can be accepted.
+**Human decision, 2026-10-20: wait for upstream proxy support.** Infrastructure
+implementation remains on hold. The local transport patch and host-managed
+filtering alternative are not approved for implementation. The draft pull request
+remains an unmerged record of the investigation and this decision.
+
+When work resumes, inspect and pin a suitable upstream version that supports
+inference through the designated proxy, then verify that behavior with a runtime
+diagnostic. The current diagnostic is pinned to the historical source below and
+must be reviewed and adapted for the new source; its existing result does not
+establish behavior of a newer version. Validate Nous OAuth login and refresh
+through the restricted route, then implement and execute the full foundation
+acceptance checks. Upstream transport support alone does not prove network
+isolation or account compatibility.
 
 ## Pinned upstream evidence
 
@@ -37,16 +45,17 @@ The reviewed `hermes_cli/proxy/server.py` Git blob is
 | Where do credentials persist? | `auth.json` in the gateway's Hermes home, plus a shared Nous store at `HERMES_SHARED_AUTH_DIR/nous_auth.json` when explicitly configured. Upstream otherwise derives a shared location. Both stores must remain gateway-only. | [auth.py](https://github.com/NousResearch/hermes-agent/blob/e55c2662f5ebfbd3a474ebf5e0e0c51187e70e39/hermes_cli/auth.py), [auth_nous.py](https://github.com/NousResearch/hermes-agent/blob/e55c2662f5ebfbd3a474ebf5e0e0c51187e70e39/hermes_cli/auth_nous.py) |
 | How does refresh work? | The Nous adapter resolves current credentials and refreshes them through upstream code; it also supports a refresh/retry after an upstream 401. Store writes are atomic with restrictive permissions and locking. Refresh, restart recovery, and revocation handling have not been exercised here. | The auth and Nous adapter sources above |
 | Does it obey `HTTP_PROXY` / `HTTPS_PROXY`? | Inference does not: `_open_upstream` constructs an aiohttp session without `trust_env=True` or an explicit proxy. OAuth uses a separate HTTPX client and must be validated separately. | The server and auth sources above; [aiohttp proxy documentation](https://docs.aiohttp.org/en/stable/client_advanced.html#proxy-support) |
-| Can it remain isolated from Hermes? | Separate processes, filesystems, and persistent stores are compatible with its design. A secure, functional deployment still depends on resolving the transport decision and executing boundary tests. | Source inspection, not a verified deployment |
+| Can it remain isolated from Hermes? | Separate processes, filesystems, and persistent stores are compatible with its design. A secure, functional deployment still depends on upstream transport support and executing boundary tests. | Source inspection, not a verified deployment |
 
 An OpenAI-compatible protocol does not establish OpenAI account access. Nous
 subscription entitlements determine which models work through this route; no
 separate OpenAI OAuth flow or API key is assumed or introduced.
 
-## Exact proposed change, not applied
+## Deferred transport proposal, not approved or applied
 
-At the pinned upstream commit, change only the inference session construction in
-`hermes_cli/proxy/server.py`:
+The earlier proposal would change only the inference session construction in
+`hermes_cli/proxy/server.py` at the pinned upstream commit. It is retained as
+review evidence; the selected decision is to wait for upstream support:
 
 ```diff
 -        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300))
@@ -62,13 +71,13 @@ This does not modify authentication, add a broker, or establish a working OAuth
 deployment by itself. Login, refresh, streaming, failure behavior, and credential
 redaction remain acceptance checks.
 
-## Alternatives requiring a decision
+## Considered alternatives
 
 | Approach | Benefit | Cost and unresolved work |
 | --- | --- | --- |
-| Pinned transport patch, recommended | Retains existing Nous OAuth and three primary services; gateway requests can use Squid. | Maintain and test a small upstream patch; enforce provider-only Squid ACLs for the gateway. |
+| Pinned transport patch, not selected | Retains existing Nous OAuth and three primary services; gateway requests can use Squid. | Maintain and test a small upstream patch; enforce provider-only Squid ACLs for the gateway. |
 | Unmodified proxy with human-administered host firewall | Retains upstream transport unchanged. | Design and verify destination enforcement outside the proxy, including changing provider IPs, IPv6, DNS, host input, Docker forwarding, and rules across restarts. No host firewall has been changed. |
-| Wait for upstream proxy support | Avoids carrying a local patch. | Foundation remains blocked until a reviewed upstream version supports the required transport. |
+| Wait for upstream proxy support, selected | Avoids carrying a local patch. | Foundation remains on hold until a reviewed upstream version supports the required transport. |
 
 Unrestricted gateway internet access, privileged networking containers, and
 passing provider credentials to Hermes are not acceptable resolutions.
@@ -124,7 +133,7 @@ home and shared-auth paths must both remain inside its private persistent mount.
 Secrets must not enter image layers, Compose environment definitions, test output,
 or committed files. Redaction during OAuth failures needs explicit verification.
 
-## Human authentication procedure after the decision
+## Human authentication procedure after upstream support is available
 
 The operator will authenticate using the existing Nous OAuth command
 `hermes auth add nous --type oauth` inside the gateway's private environment,
@@ -168,14 +177,14 @@ controls, and actual runtime verification.
 | Docker client and server availability | Executed: Engine 29.8.1; daemon readable through approved execution scope |
 | Compose CLI availability | Executed: Compose v5.5.1 |
 | Local transport diagnostic | See `tests/README.md` for the executed result and its narrow scope |
-| Compose configuration validation | Not run: no deployable configuration, pending architectural decision |
-| Required service image builds and startup | Not run: implementation stopped for review |
+| Compose configuration validation | Not run: no deployable configuration, waiting for upstream support |
+| Required service image builds and startup | Not run: implementation on hold by human decision |
 | All requested network and filesystem boundary tests | Not run: no foundation deployed |
 | Persistent storage across recreation | Not run: no persistent service storage configured |
 | Nous OAuth login, refresh, inference connectivity | Not run: human authentication and deployed gateway unavailable |
 | Security review of a completed implementation | Pending; this review only assesses feasibility and the gateway seam |
 
-Acceptance after approval must cover every handoff test, plus TCP and UDP DNS
+Acceptance when implementation resumes must cover every handoff test, plus TCP and UDP DNS
 (including Docker's embedded resolver), IPv6, proxy bypass with environment
 variables removed, nonstandard ports/protocols, literal-IP and private-host proxy
 requests, DNS rebinding to prohibited addresses, gateway policy separation, mount
@@ -188,4 +197,4 @@ guessed paths are absent. Gateway health is distinct from authenticated inferenc
 After implementation, the operator still needs documented setup, lifecycle,
 allowlist updates, log review, backup, and repeatable security-test commands.
 Those procedures cannot be truthfully supplied as working instructions before
-the architecture is selected and the stack exists.
+upstream support is available and the stack exists.
