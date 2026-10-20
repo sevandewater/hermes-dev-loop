@@ -1,5 +1,10 @@
 # Subscription Proxy transport diagnostic
 
+For the implemented foundation's boundary suite, run `python3 tests/security.py`.
+See the [main README](../README.md#security-validation) for fixtures, persistence
+and authenticated-check options. The diagnostic below records the separate
+upstream limitation that motivated the temporary gateway egress exception.
+
 This diagnostic reproduces a gateway integration limitation. It does **not**
 validate Docker network isolation or any of the requested foundation boundaries.
 Exit status zero means the limitation was reproduced, not that the infrastructure

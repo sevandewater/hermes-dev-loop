@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+umask 077
+mkdir -p "$HERMES_HOME" "$HERMES_SHARED_AUTH_DIR"
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+if [ ! -s "$HERMES_HOME/auth.json" ]; then
+    printf '%s\n' 'Gateway awaiting human Nous OAuth login. See README.md; no inference is available.'
+    exec sleep infinity
+fi
+# Bind only the intended internal interface, never the egress interface.
+exec hermes proxy start --provider nous --host 10.237.81.2 --port 8645

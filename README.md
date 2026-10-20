@@ -1,27 +1,257 @@
 # Hermes DevLoop
 
-Infrastructure foundation for a human-administered Hermes development environment.
+A Docker Compose foundation for supervised Hermes development. The agent can
+build its own tools in persistent storage while infrastructure and provider
+credentials stay outside its mounts. No unattended agent loop starts.
 
-**Status: waiting for upstream proxy support; no deployable stack has been created.**
-The handoff requires stopping when a functional integration conflicts with a
-security requirement. Investigation found that the preferred Subscription Proxy
-does not honor outbound proxy environment settings for inference requests. A
-Squid-only gateway deployment therefore needs upstream transport support or a
-separate enforcement approach. The human decision on 2026-10-20 is to wait for
-upstream support. A local transport patch and host-managed filtering alternative
-are not approved for implementation.
+**Temporary exception approved by the human:** the stock LLM Subscription Proxy
+has direct outbound networking. It does not yet support the required outbound
+proxy routing. Its destinations are not independently filtered; a compromised
+gateway could reach the internet, host, and LAN. Hermes itself retains strict
+egress isolation. Adoption of [upstream PR #110083](https://github.com/NousResearch/hermes-agent/pull/110083)
+is deferred until upstream support is available; this repository carries no
+transport patch. See [the decision and risks](docs/infrastructure-review.md).
 
-See [the architectural review](docs/infrastructure-review.md) for pinned source
-evidence, the deferred transport proposal, the decision and resumption criteria,
-credential-storage requirements, and validation status. See
-[the diagnostic instructions](tests/README.md) to reproduce the transport finding.
+## Architecture
 
-The intended foundation has three services: a nonprivileged Hermes development
-container, default-deny Squid, and the existing Nous Subscription Proxy. The
-development container will own only its persistent workspace, memory, skills,
-and tools. Infrastructure, network controls, and gateway credential storage
-remain exclusively human-administered.
+```mermaid
+flowchart LR
+  Admin[Human administrator] --> Infra[Compose, images, allowlist, security tests]
+  Admin --> State[Private gateway OAuth state]
+  subgraph Dev[Isolated internal development network]
+    Hermes[Hermes: idle development container]
+    Squid[Squid: allowlisted HTTPS CONNECT]
+    Hermes --> Squid
+  end
+  subgraph LLM[Isolated internal inference network]
+    Gateway[Upstream Subscription Proxy]
+  end
+  Hermes -->|Internal API, dummy bearer| Gateway
+  Squid -->|Separate NAT network| Approved[Approved public development services]
+  State --> Gateway
+  Gateway -->|Separate NAT network: temporary exception| Nous[Nous OAuth and inference]
+  Hermes --> Writable[Workspace, home, memory, skills, tools]
+```
 
-No autonomous agent execution is enabled. Runtime security tests, image builds,
-storage persistence, and authenticated inference remain pending. This repository
-must not yet be treated as an isolated or functional development environment.
+Hermes joins two `internal` Docker bridges using `gateway_mode_ipv4: isolated`.
+Docker assigns no host IP to these bridges and gives Hermes no default route.
+External DNS forwarding is unavailable to this internal-only container; its
+system resolver also points to container loopback. IPv6 and IP forwarding are
+disabled, all capabilities are dropped, and route changes/raw sockets are denied.
+Squid and the gateway have IP forwarding disabled too, so neither provides an
+IP-routing bypass. Proxy environment settings make clients functional; they are
+not the enforcement boundary. See [Docker's isolated-mode documentation](https://docs.docker.com/engine/network/port-publishing/#gateway-modes).
+
+Squid listens only on its internal address. It allows exact public destination
+names on TCP 443 using CONNECT, rejects private/special-use destinations even
+when an approved name resolves to them, and denies other traffic. The gateway
+listens only on its inference-network address. No host ports are published.
+
+## Files and ownership
+
+| Path | Owner and container access |
+| --- | --- |
+| `compose.yaml`, `.env`, `infrastructure/`, `scripts/`, `tests/`, `docs/` | Human administration; never mounted into Hermes |
+| `runtime/hermes/home/` | Hermes-writable home and its own application configuration |
+| `runtime/hermes/workspace/` | Hermes-writable development workspace at `/workspace` |
+| `runtime/hermes/memory/` | Hermes memory at `/home/hermes/.hermes/memories` |
+| `runtime/hermes/skills/` | Hermes skills at `/home/hermes/.hermes/skills` |
+| `runtime/hermes/tools/` | Executable development tools at `/home/hermes/tools` |
+| `runtime/gateway/` | Gateway and human only; mounted at `/var/lib/gateway` in the gateway |
+| `infrastructure/squid/` | Human-owned policy, mounted read-only into Squid |
+
+The whole `runtime/` tree and local `.env` files are Git-ignored. Separate bind
+mounts expose only the listed paths, never the repository or runtime parent.
+All containers run as UID/GID 1000, with a read-only root, `no-new-privileges`,
+Docker's default seccomp profile, CPU/memory/process limits, and bounded log files.
+There is no Docker socket, Docker-in-Docker, privileged container, or host network.
+
+## Prerequisites
+
+- A Linux Docker Engine **28 or newer**, with bridge firewalling enabled and
+  support for isolated gateway mode. Tested versions are in the validation report.
+- Docker Compose v2 or newer, Python 3, and `iproute2` on the host for tests.
+- Host user UID 1000. This initial slice fixes container ownership to that UID;
+  changing it requires a coordinated image/Compose/runtime ownership update.
+- Internet access during image builds, enough disk for Hermes dependencies and
+  development toolchains, and a Nous Portal account for real inference.
+- Unused `10.237.80.0/24` and `10.237.81.0/24` subnets. Docker rejects overlaps
+  with its networks. Check LAN/VPN routes too before starting. These fixed
+  addresses appear in Compose, Squid policy, the gateway launcher, and tests;
+  update them together if your host uses those ranges.
+
+This targets native Linux Docker. Docker Desktop, rootless Docker, modified
+Docker firewall backends, and other host kernels require their own runtime
+validation; configuration validation alone does not qualify them.
+
+## Initial setup
+
+From the repository root, as UID 1000:
+
+```bash
+cp .env.example .env
+python3 scripts/init-runtime.py
+docker compose config --quiet
+docker compose build
+docker compose up -d
+```
+
+Images use a digest-pinned Python base and Hermes source commit
+`e55c2662f5ebfbd3a474ebf5e0e0c51187e70e39`. Python dependencies are installed
+from that source's frozen lockfile with MCP, PTY, and aiohttp extras. Separate
+Dockerfile targets share the pinned source/dependencies; the gateway omits the
+development OS toolchain. OS packages
+come from Debian's maintained repositories at build time; the complete OS
+package graph is not snapshot-pinned.
+
+Hermes starts as `sleep infinity`. The unauthenticated gateway also idles and
+reports unhealthy because inference is unavailable. Squid must become healthy
+before Hermes starts. This is an intentional pre-login state, not proof of a
+working model connection.
+
+## Nous Portal authentication
+
+Keep all login operations inside the gateway container. Do not authenticate the
+agent directly with Nous or copy your host Hermes home into either container.
+
+```bash
+docker compose exec llm-gateway hermes auth add nous --type oauth --no-browser
+```
+
+Open the printed device verification URL in your own browser and approve the
+sign-in there. Do not paste tokens or login codes into chat. The upstream Nous
+flow uses device-code authentication, so no callback port is published.
+
+The gateway sets `HERMES_HOME=/var/lib/gateway/hermes` and
+`HERMES_SHARED_AUTH_DIR=/var/lib/gateway/shared`. Both `auth.json` and the shared
+`nous_auth.json` remain in its private persistent mount. Upstream handles token
+refresh, locking, and restrictive atomic writes. The launcher uses umask 077.
+
+After successful login:
+
+```bash
+docker compose restart llm-gateway
+docker compose ps
+python3 tests/security.py --authenticated
+```
+
+The optional authenticated check requests the real provider model list through
+the gateway; it does not run a paid chat completion. Confirm your account's model
+entitlements before selecting a model. Nous access and OpenAI protocol
+compatibility do not establish access through a separate OpenAI authentication
+method. Real login, refresh, and inference require human participation and are
+not claimed by the credential-free test fixture.
+
+If authentication is revoked or expired, repeat login inside the gateway and
+restart it. Never log in while the test suite is running: it may be using a
+temporary gateway fixture or recreating the container.
+
+## Development and service lifecycle
+
+```bash
+docker compose exec hermes bash
+# In the container:
+cd /workspace
+python3 -m venv .venv
+.venv/bin/pip install YOUR_APPROVED_PACKAGE
+node --version
+cc --version
+```
+
+Python, Node/npm, C/C++ build tools, Git, curl, SQLite, and network diagnostics are
+available. Hermes can write scripts, compile applications, and run its own MCP
+implementations through stdio or local ports without host file approvals.
+Tools must honor the HTTP proxy for external HTTPS access. A raw Node socket or
+client that ignores proxy settings will fail to connect directly.
+
+The inference endpoint in Hermes is `http://10.237.81.2:8645/v1`, with a dummy
+client key that upstream replaces. After human login, explicitly select a model
+from the provider model list and start an interactive session:
+
+```bash
+docker compose exec hermes hermes chat --cli --provider custom \
+  --base-url http://10.237.81.2:8645/v1 --api-key unused \
+  --model YOUR_NOUS_MODEL_ID
+```
+
+Replace `YOUR_NOUS_MODEL_ID` with an entitled model from the real model list.
+`--cli` selects the classic REPL; this development image does not build the web
+dashboard or TypeScript TUI. No agent session, task scheduler, webhook, messaging
+gateway, or continuous engineering loop is started by Compose.
+
+```bash
+docker compose stop            # stop services; retain containers and data
+docker compose start           # resume existing containers
+docker compose down            # remove this stack's containers and networks
+docker compose up -d           # recreate them; bind-mounted runtime data persists
+```
+
+Back up `runtime/hermes/` as development data. Back up `runtime/gateway/`
+separately as credentials, with private permissions/encryption and human access
+controls. Stop the gateway before a consistent credential-store backup. Do not
+commit or attach backups or runtime state to a PR.
+
+## Allowlist and logs
+
+Edit exact names in `infrastructure/squid/allowlist.txt` as the human administrator.
+The default list supports PyPI, npm, and selected GitHub download hosts. Provider
+inference hosts are intentionally absent, so Hermes must use its gateway.
+Plain HTTP, Git-over-SSH, arbitrary ports, and IPv6 destinations are denied.
+Review package-download redirect hosts individually; avoid broad wildcard domains.
+
+```bash
+docker compose exec squid squid -k parse -f /etc/squid/devloop/squid.conf
+docker compose restart squid
+docker compose logs --tail 100 squid
+docker compose logs --tail 100 llm-gateway
+```
+
+Squid logs timestamp, source, method, status, routing result, and destination IP;
+it omits URLs, query strings, headers, and bodies. Docker rotates each service's
+logs at 10 MB with three retained files. The upstream proxy disables HTTP access
+logging; debug/OAuth trace logging must remain off. Review authentication failure
+logs locally and redact them before sharing. Upstream error redaction with real
+credentials remains an unverified acceptance check.
+
+Keep special-use ranges in `prohibited-destinations.txt` denied. Add any host
+public addresses that could otherwise be reached through an approved hostname.
+Changes to service networks, listener addresses, mount policy, or allowlists
+require rerunning the security suite.
+
+## Security validation
+
+```bash
+python3 tests/security.py
+python3 tests/security.py --persistence
+# After real human login:
+python3 tests/security.py --authenticated
+```
+
+The suite needs host Docker administration access; Hermes receives none of that
+access. It injects test programs over stdin, creates disposable reachable TCP/DNS
+canaries, and inspects actual container/network/mount state. When no credentials
+exist, it temporarily runs the **real upstream proxy with a fake adapter** on the
+designated gateway interface. That verifies internal forwarding and credential
+replacement without performing OAuth or contacting a provider with credentials.
+
+`--persistence` recreates Hermes and the gateway and checks all persistent data
+paths with UUID canaries. Run it during supervised downtime. The suite removes
+only its own canaries; it never deletes existing runtime data. Concurrent runs
+are not supported. Results are written to ignored `runtime/security-results.json`.
+A failure returns nonzero; skipped checks and accepted exceptions are explicitly
+reported. See [executed results and remaining gaps](docs/security-validation.md).
+
+## Remaining risks
+
+The gateway's independent destination filter is deferred by human decision. Its
+unrestricted egress expands the impact of a gateway compromise. Its inference
+interface also lacks private client authentication and independently enforced
+request, token, or spending limits. An authorized compromised Hermes process can
+consume subscription quota through that interface. Provider tier limits and
+network isolation do not provide a local usage budget.
+
+A conventional HTTPS CONNECT allowlist also permits data exchange with approved
+services and does not inspect encrypted payloads. Container escape vulnerabilities
+and supply-chain compromises remain outside what these boundary checks can prove.
+Keep Docker, the OS, Squid, and the pinned upstream under human patch management.
+Autonomous engineering remains a later milestone.
