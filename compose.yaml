@@ -1,0 +1,207 @@
+name: hermes-dev-loop
+
+x-security: &security
+  user: "1000:1000"
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  restart: "no"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  sysctls:
+    net.ipv4.ip_forward: "0"
+    net.ipv6.conf.all.disable_ipv6: "1"
+    net.ipv6.conf.default.disable_ipv6: "1"
+
+services:
+  hermes:
+    <<: *security
+    image: hermes-dev-loop-hermes:local
+    build:
+      context: ./infrastructure/hermes
+      target: development
+    command: [sleep, infinity]
+    working_dir: /workspace
+    cpus: ${HERMES_CPUS:-2}
+    mem_limit: ${HERMES_MEMORY:-4g}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=1777
+    environment:
+      HOME: /home/hermes
+      HERMES_HOME: /home/hermes/.hermes
+      HERMES_SHARED_AUTH_DIR: /home/hermes/.hermes/shared
+      TERMINAL_ENV: local
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: 127.0.0.1,localhost,llm-gateway-api,github-broker
+      no_proxy: 127.0.0.1,localhost,llm-gateway-api,github-broker
+      OPENAI_BASE_URL: http://llm-gateway-api:8645/v1
+      OPENAI_API_KEY: unused-gateway-attaches-provider-credential
+      PYTHONUSERBASE: /home/hermes/.local
+      PIP_REQUIRE_VIRTUALENV: "true"
+      npm_config_cache: /home/hermes/.npm
+    dns: [127.0.0.1]
+    networks:
+      development:
+        ipv4_address: 10.237.80.3
+      inference:
+        ipv4_address: 10.237.81.3
+    volumes:
+      - type: bind
+        source: ./runtime/hermes/home
+        target: /home/hermes
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/hermes/workspace
+        target: /workspace
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/hermes/memory
+        target: /home/hermes/.hermes/memories
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/hermes/skills
+        target: /home/hermes/.hermes/skills
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/hermes/tools
+        target: /home/hermes/tools
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/reference
+        target: /reference
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      squid: {condition: service_healthy}
+
+  squid:
+    <<: *security
+    image: hermes-dev-loop-squid:local
+    build: ./infrastructure/squid
+    cpus: ${SQUID_CPUS:-1}
+    mem_limit: ${SQUID_MEMORY:-256m}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=33554432,uid=1000,gid=1000,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=8388608,uid=1000,gid=1000
+    networks:
+      development:
+        ipv4_address: 10.237.80.2
+      proxy_egress: {}
+    volumes:
+      - type: bind
+        source: ./infrastructure/squid
+        target: /etc/squid/devloop
+        read_only: true
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, python3, -c, "import socket; socket.create_connection(('10.237.80.2', 3128), 3).close()"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  llm-gateway:
+    <<: *security
+    image: hermes-dev-loop-gateway:local
+    build:
+      context: ./infrastructure/hermes
+      target: gateway
+    cpus: ${GATEWAY_CPUS:-1}
+    mem_limit: ${GATEWAY_MEMORY:-1g}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=134217728,uid=1000,gid=1000,mode=1777
+    environment:
+      HOME: /var/lib/gateway
+      HERMES_HOME: /var/lib/gateway/hermes
+      HERMES_SHARED_AUTH_DIR: /var/lib/gateway/shared
+    # Temporary, human-approved exception: stock Subscription Proxy does not
+    # support outbound proxy routing. No independent destination filter here.
+    networks:
+      inference:
+        ipv4_address: 10.237.81.2
+        aliases: [llm-gateway-api]
+      gateway_egress: {}
+    volumes:
+      - type: bind
+        source: ./runtime/gateway
+        target: /var/lib/gateway
+        bind: {create_host_path: false}
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://llm-gateway-api:8645/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  github-broker:
+    <<: *security
+    profiles: [github]
+    image: hermes-dev-loop-github-broker:local
+    build:
+      context: ./infrastructure/github-broker
+      additional_contexts:
+        base: service:llm-gateway
+    cpus: 1
+    mem_limit: 512m
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=134217728,uid=1000,gid=1000,mode=1777
+    environment:
+      HOME: /tmp
+      HTTP_PROXY: http://squid:3128
+      HTTPS_PROXY: http://squid:3128
+      http_proxy: http://squid:3128
+      https_proxy: http://squid:3128
+      NO_PROXY: localhost,127.0.0.1,github-broker
+      no_proxy: localhost,127.0.0.1,github-broker
+    dns: [127.0.0.1]
+    networks:
+      development:
+        ipv4_address: 10.237.80.4
+    volumes:
+      - type: bind
+        source: ${HOME}/.config/hermes-dev-loop/github-app.pem
+        target: /broker-secrets/github-app.pem
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${HOME}/.config/hermes-dev-loop/github-app.json
+        target: /broker-secrets/github-app.json
+        read_only: true
+        bind: {create_host_path: false}
+    depends_on:
+      squid: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://github-broker:8000/health',timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+networks:
+  development:
+    driver: bridge
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config: [{subnet: 10.237.80.0/24}]
+  inference:
+    driver: bridge
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+    ipam:
+      config: [{subnet: 10.237.81.0/24}]
+  proxy_egress:
+    driver: bridge
+    enable_ipv6: false
+  gateway_egress:
+    driver: bridge
+    enable_ipv6: false

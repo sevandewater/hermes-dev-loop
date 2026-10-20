@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+umask 077
+mkdir -p "$HERMES_HOME" "$HERMES_SHARED_AUTH_DIR"
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+if /opt/hermes/.venv/bin/python -c \
+    'from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter; raise SystemExit(0 if NousPortalAdapter().is_authenticated() else 10)' \
+    >/dev/null 2>&1; then
+    :
+else
+    result=$?
+    if [ "$result" -ne 10 ]; then
+        printf '%s\n' 'Gateway authentication check failed; inspect the installed gateway dependencies.' >&2
+        exit 1
+    fi
+    printf '%s\n' 'Gateway awaiting human Nous OAuth login. See README.md; no inference is available.'
+    exec sleep infinity
+fi
+# This alias exists only on inference. Upstream uses --host for both binding
+# and Host-header validation, so clients and self-probes must use the same name.
+exec hermes proxy start --provider nous --host llm-gateway-api --port 8645

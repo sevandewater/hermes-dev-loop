@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Human-operated entry point for Hermes DevLoop."""
+from scripts.devloop import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())
