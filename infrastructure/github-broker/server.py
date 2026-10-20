@@ -1,5 +1,4 @@
 """Narrow MCP policy adapter around the maintained GitHub MCP stdio server."""
-import asyncio
 from contextlib import asynccontextmanager
 import json
 import os
@@ -12,9 +11,10 @@ from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
-from policy import APP_ID, BASE, OWNER, REPO, PolicyError, merge_protection, proposal_branch, source_path, validate_files
+from policy import APP_ID, BASE, OWNER, REPO, PREFIX, PolicyError, review_protection, pull_request_rules, proposal_branch, source_path, validate_files
 
-UPSTREAM_TOOLS = ('get_file_contents', 'pull_request_read', 'create_branch', 'push_files', 'create_pull_request')
+UPSTREAM_TOOLS = ('get_file_contents', 'pull_request_read', 'create_branch', 'push_files', 'create_pull_request',
+                  'repository_ruleset_read')
 
 
 @asynccontextmanager
@@ -60,15 +60,30 @@ async def backend(ctx, name, args):
     return result
 
 
-async def allow_write():
-    await asyncio.to_thread(merge_protection)
+async def rules_json(ctx, **arguments):
+    result = await backend(ctx, 'repository_ruleset_read', {'level': 'repository', **arguments})
+    for block in result.content:
+        if getattr(block, 'type', None) == 'text':
+            try:
+                return json.loads(block.text)
+            except ValueError:
+                pass
+    raise PolicyError('GitHub returned invalid review-rule data; writes remain blocked.')
+
+
+async def current_review_protection(ctx):
+    rules = pull_request_rules(await rules_json(ctx, method='get_rules_for_branch', branch=BASE))
+    details = {}
+    for rule_id in {r['ruleset_id'] for r in rules if r.get('type') == 'pull_request' and type(r.get('ruleset_id')) is int}:
+        details[PREFIX + '/rulesets/' + str(rule_id)] = await rules_json(ctx, method='get', ruleset_id=rule_id)
+    return review_protection(lambda path: rules if path == PREFIX + '/rules/branches/' + BASE else details[path])
 
 
 @server.tool()
-async def broker_status() -> dict:
-    """Check whether GitHub currently enforces human-only updates to main. Does not write."""
+async def broker_status(ctx: Context) -> dict:
+    """Check the required PR/code-owner review settings and App bypass permission. Does not write."""
     try:
-        protection = await asyncio.to_thread(merge_protection)
+        protection = await current_review_protection(ctx)
         return {'repository': OWNER + '/' + REPO, 'writes_enabled': True, **protection}
     except PolicyError as error:
         return {'repository': OWNER + '/' + REPO, 'writes_enabled': False, 'reason': str(error)}
@@ -93,9 +108,9 @@ async def read_pull_request(number: int, ctx: Context, method: str = 'get'):
 
 @server.tool()
 async def create_proposal_branch(branch: str, ctx: Context):
-    """Create a hermes/ proposal branch from main. Human-only merge protection is required."""
+    """Create a hermes/ proposal branch from main. Required PR review must have no bypass."""
     proposal_branch(branch)
-    await allow_write()
+    await current_review_protection(ctx)
     return await backend(ctx, 'create_branch', {'branch': branch, 'from_branch': BASE})
 
 
@@ -106,7 +121,7 @@ async def commit_proposal_files(branch: str, files: list[dict], message: str, ct
     validate_files(files)
     if not message.strip() or len(message) > 2000:
         raise PolicyError('Provide a nonempty commit message under 2000 characters.')
-    await allow_write()
+    await current_review_protection(ctx)
     return await backend(ctx, 'push_files', {'branch': branch, 'files': files, 'message': message})
 
 
@@ -116,7 +131,7 @@ async def open_proposal_pull_request(branch: str, title: str, body: str, ctx: Co
     proposal_branch(branch)
     if not title.strip() or len(title) > 200 or len(body) > 20_000:
         raise PolicyError('Provide a title under 200 characters and body under 20000 characters.')
-    await allow_write()
+    await current_review_protection(ctx)
     return await backend(ctx, 'create_pull_request', {'head': branch, 'base': BASE, 'title': title, 'body': body,
         'draft': True, 'maintainer_can_modify': True})
 

@@ -58,9 +58,11 @@ approval tool, generic API or host execution access.
 
 Start/register the broker using the **github** submenu in `./devloop`, then start
 a new Hermes chat. The broker can read repository files and PRs immediately.
-Before proposal writes, its live policy requires an effective **Restrict updates**
-rule on `main`, with human administrators as the only bypass actors. Human review
-alone does not remove the App's underlying Contents-write merge permission.
+Before proposal writes, its live policy requires an active PR rule on `main`
+with at least one approval, code-owner review, stale-approval dismissal and no
+App bypass. The repository keeps its bypass list empty, so the human owner
+follows the same rules. The broker reports when GitHub hides the full list. The broker exposes no
+merge operation; the App retains its underlying post-approval merge permission.
 
 For an improvement, inspect the reference, develop and test in the workspace,
 then create a `hermes/` proposal branch from `main`, submit changed text files
@@ -68,8 +70,11 @@ with `commit_proposal_files`, and open a draft through
 `open_proposal_pull_request`. Local workspace Git operations do not receive App
 credentials: publication happens through MCP rather than authenticated Git push.
 Tools fix the owner/repository/base and reject protected files and workflow
-changes. The first foundation PR should be merged by the human before proposals
-against `main`; otherwise `main` lacks the code in the feature reference.
+changes. The foundation should reach `main` before functional improvements are proposed;
+otherwise `main` lacks the code in the feature reference. Its CODEOWNERS file
+assigns all files to the human owner and becomes effective on the base branch
+after merge. The current foundation PR is authored by the human, so it needs
+another eligible reviewer; App-authored proposals can be reviewed by the human.
 
 `./devloop github --check` verifies actual reads and denial paths without remote
 mutation. `./devloop github --proposal-test` explicitly creates a disposable

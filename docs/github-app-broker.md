@@ -55,13 +55,14 @@ require a reviewed artifact/digest change.
 
 A small policy adapter uses that SDK's Streamable HTTP server and stdio client.
 Its fixed upstream allowlist is exactly `get_file_contents`, `pull_request_read`,
-`create_branch`, `push_files`, `create_pull_request`; startup verifies the actual
-tool set. Agent-controlled arguments cannot choose the owner, repository,
+`create_branch`, `push_files`, `create_pull_request`, `repository_ruleset_read`;
+startup verifies the actual tool set. The ruleset read tool is used internally
+for authenticated policy checks and is not exposed to Hermes. Agent-controlled arguments cannot choose the owner, repository,
 credential, upstream command or API URL. Six tools are exposed to Hermes:
 
 | Tool | Boundary |
 | --- | --- |
-| `broker_status` | Read current human-only update protection; no remote writes |
+| `broker_status` | Read required-review settings and App bypass permission; no remote writes |
 | `read_project_file` | Read normalized paths from `main` or `hermes/` branches |
 | `read_pull_request` | Read project PR metadata, diff, files, comments, reviews or status |
 | `create_proposal_branch` | Create only `hermes/` branches, based on `main` |
@@ -92,44 +93,63 @@ agent scripts. Its internal HTTP endpoint accepts the `github-broker:8000`
 hostname; possession of that endpoint grants only its six bounded operations.
 Hermes' writable local MCP settings do not grant access to additional host mounts.
 
-## GitHub must enforce human-only updates
+## Required review without bypass
 
-The installed App has Contents and Pull requests read/write, Issues read/write,
-and Metadata read; Administration, Actions and Workflows are absent. Issues
-write is unused and can be removed. Keep the installation restricted to this
-repository. [GitHub's merge API requires Contents write](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request),
-so omitting a merge tool or requiring review is insufficient by itself.
+Human decision on 2026-10-20: code-owner approval is the acceptance gate; the
+human owner must also follow the rules. No Restrict updates rule or administrator
+bypass is required or added. The broker accepts an effective active PR rule on
+`main` only when all of these hold:
 
-Configure the existing [no-direct-main ruleset](https://github.com/sevandewater/hermes-dev-loop/rules/25510073):
+- At least one approving review is required.
+- Code-owner review is required.
+- New commits dismiss stale approvals.
+- The authenticated App is explicitly reported as unable to bypass the rule.
+- Any visible bypass list is empty. The host-side inspection confirmed no human,
+  App, writer or other bypass actor is configured.
 
-1. Keep enforcement **Active** and target **Default branch (`main`)**.
-2. Under Rules, enable **Restrict updates**. Retain the PR/review protections.
-3. Add **Repository admin** to the bypass list, choosing **For pull requests
-   only**. Do not add the GitHub App or the Write role. Save the ruleset.
+The existing [no-direct-main ruleset](https://github.com/sevandewater/hermes-dev-loop/rules/25510073)
+already satisfies these checks. Every proposal write rechecks the effective
+branch rules and their originating ruleset through the official MCP server
+authenticated as the App. Disabled/unrelated rulesets, missing review settings,
+any App bypass permission, visible bypass entries, network failures and
+unavailable rule data block writes. There is no custom authenticated HTTP client
+or token issuer. API limits fail closed.
 
-The broker accepts an effective active `update` rule only when its bypass list
-is nonempty and consists exclusively of RepositoryRole ID 5 (administrators),
-with `pull_request` or `always` mode. On this personal repository, that role is
-the human administrator, not the App. The check uses GitHub's effective branch
-rules and then the originating ruleset. Disabled or unrelated rulesets cannot
-enable writes. Empty bypass lists would block the human too, so are rejected.
-[Restrict updates permits updates only by bypass actors](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets).
+GitHub can omit `bypass_actors` from the App response. An omitted list is not
+treated as an empty list: status reports `bypass_list_visible: false`. The
+authenticated `current_user_can_bypass: never` result independently establishes
+that the App cannot bypass. The complete empty bypass list was verified through
+the human connection; the broker does not claim to continuously verify hidden
+actors. No actor or bypass setting was added or changed.
+The broker cannot edit GitHub rules. An external administrator can change them,
+so maintain the review settings throughout the workflow.
 
-Rules are read anonymously for this public repository. Network errors, rate
-limits and unavailable rule data fail closed; retry later after investigating
-connectivity or GitHub's API limits. Private repositories need a separate
-reviewed policy-read mechanism. This check is not a GitHub administrator: it
-cannot repair protections. Ruleset removal after a check is an external
-administrative race; keep the human-owned protections in place.
+[CODEOWNERS on the PR base branch determines the owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners).
+The included `.github/CODEOWNERS` assigns every file, including itself, to
+`@sevandewater`. It must reach `main` before code-owner-specific enforcement can
+use it. At the live check, `main` contained only LICENSE, so this ownership file
+was not yet effective. The generic one-review rule already applies; the broker
+permits proposal creation during that bootstrap and verifies the configured
+code-owner setting, not deployment of the ownership file. Do not confuse that
+configuration check with confirmed owner selection on an individual PR.
 
-On 2026-10-20 GitHub reported `no-direct-main` **active**, but without an `update`
-rule or bypass actors. Authenticated reads pass; proposal writes remain blocked.
-No draft canary has been created. After completing the steps above, rerun the
-explicit canary test. It creates a disposable `hermes/integration-*` branch,
-one text-file commit and a draft PR marked **Do not merge**. Close that PR after
-verification. The test never attempts a real merge.
+The App has Contents and Pull requests read/write, Issues read/write, and
+Metadata read; Administration, Actions and Workflows are absent. Issues write
+is unused. Keep the installation restricted to this repository.
+[GitHub's merge API requires Contents write](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request),
+so this chosen design guarantees required review rather than removal of the
+App's underlying post-approval merge permission. The broker has no merge,
+approval or auto-merge tool and never attempts a real merge as a test.
+
+The explicit proposal test creates a disposable `hermes/integration-*` branch,
+one text-file commit and a draft PR marked **Do not merge**. Close it after
+verification. Drafts do not automatically request code-owner reviews; marking a
+real proposal ready for review does. GitHub does not allow a PR author to approve
+their own PR: the existing foundation PR #1 is authored by `sevandewater` and
+needs another eligible reviewer under the no-bypass policy. Future App-authored
+proposals can be reviewed by the human owner. No existing PR is merged,
+re-authored or replaced by this change.
 
 See [executed validation](github-broker-validation.md) and the
 [human-reviewed workflow](hermes-project-workflow.md). Token refresh across an
-installation-token expiry has not been exercised; that behavior is delegated
-to the maintained upstream implementation.
+installation-token expiry has not been exercised; it is delegated to upstream.

@@ -84,7 +84,7 @@ async def inside(proposal):
                 output.update({'proposal_created': True, 'branch': branch, 'pull_request': urls[0] if urls else None})
                 output['results'].append('PASS: App-authored branch, commit and draft PR created through Hermes MCP')
             elif proposal:
-                output['results'].append('SKIP: draft PR creation blocked until human-only merge protection is active')
+                output['results'].append('SKIP: draft PR creation blocked until required PR/code-owner review rules pass')
             return output
 
 

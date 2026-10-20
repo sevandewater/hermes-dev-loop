@@ -85,7 +85,7 @@ tests. Subsequent [foundation validation](../docs/security-validation.md) and
 ## GitHub broker checks
 
 The local unit suite also covers RSA import/storage, public App-ID correction
-without key rotation, proposal branch/path/content policy, GitHub ruleset policy,
+without key rotation, proposal branch/path/content policy, required-review/no-bypass ruleset policy,
 and CLI broker activation/lifecycle. Disposable keys remain in temporary test
 directories; unit tests do not authenticate to GitHub.
 
@@ -99,8 +99,8 @@ After `./devloop github --start`, run:
 The first runs the MCP client inside Hermes and verifies actual App-authenticated
 file/PR reads, the exact six-tool surface, unavailable merge tool, and rejected
 main/workflow/key-path operations. It sends no GitHub mutation. The second adds
-a disposable branch/commit/draft-PR canary, explicitly gated on active human-only
-update protection. It exits 2 when protection blocks creation; no real merge is
+a disposable branch/commit/draft-PR canary, explicitly gated on active required PR/code-owner
+review with stale-approval dismissal and no bypass actors. It exits 2 when protection blocks creation; no real merge is
 ever attempted. Close a successfully created canary PR after inspection.
 
 The full `./devloop test --persistence` suite includes broker mounts, runtime

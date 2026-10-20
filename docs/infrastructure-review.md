@@ -73,7 +73,7 @@ The live host checkout, credentials and administration files remain unmounted.
 Only a committed-source export at `/reference` is readable, and the Docker mount
 denies writes. A separate workspace Git checkout supports edits. A separate GitHub App and isolated MCP broker provide proposal operations; no
 administrator credentials are made available to Hermes. Proposal writes stay
-blocked until GitHub enforces human-only updates to `main`. See [the workflow](hermes-project-workflow.md).
+gated by GitHub's required PR/code-owner review policy with no bypass actors. See [the workflow](hermes-project-workflow.md).
 
 ### Gateway and account work
 
@@ -103,7 +103,13 @@ use service names. The gateway uses an inference-only `llm-gateway-api` DNS alia
 for its stock bind option and clients, preserving upstream Host-header validation
 and avoiding self-resolution to the egress interface. The existing gateway egress exception is unchanged.
 
-An active GitHub Restrict updates rule with human-admin-only bypass is required
-before every proposal write. This extends the isolation boundary to GitHub;
-review approval alone would leave the App able to merge with Contents write.
+The human chose required code-owner approval without any bypass actors,
+including the human administrator. Every proposal write verifies an active PR
+rule with at least one approval, code-owner review and stale-approval dismissal,
+plus an authenticated result that the App cannot bypass. The complete empty
+bypass list was checked through the human connection; the App can be unable to
+see that full list and reports its visibility without assuming it is empty.
+This reserves acceptance for review; it does not remove the App's underlying
+post-approval merge permission. The broker exposes no merge or approval tool.
+CODEOWNERS is included for all files and becomes effective when merged to main.
 See [design and setup](github-app-broker.md) and [validation](github-broker-validation.md).

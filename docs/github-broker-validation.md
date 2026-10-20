@@ -1,102 +1,109 @@
 # GitHub broker integration validation
 
-Executed 2026-10-20 on native Ubuntu 22.04.5 / kernel 5.15.0-105-generic,
-Docker Engine 29.8.1 and Compose 5.5.1. The final boundary report completed at
-22:57:07 UTC (18:57 America/Toronto). This extends the historical foundation and
-CLI runs; it does not replace their recorded scope.
+Executed 2026-10-20 on Ubuntu 22.04.5 / kernel 5.15.0-105-generic,
+Docker Engine 29.8.1 and Compose 5.5.1. The human chose required code-owner
+approval without bypass, including no administrator bypass. No GitHub rules or
+permissions were modified by this integration.
 
-## Executed results
+## Current review-policy results
 
 | Check | Result |
 | --- | --- |
-| Local unit suite, including credential storage, reference export, CLI lifecycle and broker policy | 62 tests PASS |
-| App registration, installation and selected repository authenticated using corrected App ID 5402740 | PASS |
-| Official GitHub MCP v2.0.2 starts with native App authentication through Squid | PASS |
-| Hermes MCP client connects to `github-devloop` by service name and discovers exactly six tools | PASS |
-| Real `LICENSE` read and PR #1 metadata through Hermes → broker → official GitHub MCP → GitHub | PASS |
-| Exact tool surface; unregistered merge call rejected locally, without any GitHub merge request | PASS |
-| Main branch writes, workflow writes and broker-key path reads denied | PASS |
-| GitHub effective human-only update protection | NOT READY: active ruleset lacks Restrict updates and human-admin bypass |
-| Explicit draft-PR canary | SKIP: protection gate blocked creation; no proposal created |
-| `./devloop test --persistence`, with all four services running | 28 groups PASS, one account group SKIP, one accepted gateway exception |
-| Whitespace and source syntax checks | PASS |
+| Local unit suite, including credential storage, source exports, CLI lifecycle and review policy | 65 tests PASS |
+| Official GitHub MCP v2.0.2 App authentication | PASS |
+| Exact six-tool Hermes surface; no merge, approval or generic execution tool | PASS |
+| Actual repository file and PR reads through Hermes → broker → official GitHub MCP → GitHub | PASS |
+| Main writes, workflow writes and key-path reads rejected | PASS |
+| Unregistered merge tool rejected locally; no GitHub merge request sent | PASS |
+| Active PR rule with one approval, code-owner review and stale-approval dismissal | PASS |
+| Authenticated App bypass permission | PASS: `current_user_can_bypass: never` |
+| Complete bypass list, inspected through the human GitHub connection | PASS: empty |
+| App visibility of complete bypass list | Not visible; status reports this rather than assuming an empty list |
+| App-authored branch, commit and draft PR | PASS: disposable PR #2 |
+| Canary cleanup | PASS: closed unmerged; disposable branch deleted by host administrator |
+| CODEOWNERS active on main | PENDING: ownership file included in foundation PR #1; main still contains only LICENSE |
 
-The five read/denial groups in `./devloop github --check` passed after the final
-broker rebuild and container persistence run. The actual `hermes mcp test
-github-devloop` command connected and listed all six tools. No inference request
-was needed. The explicit proposal test repeated the checks and reported
-`writes_enabled: false`, `proposal_created: false`; its underlying script exits
-2 for that blocked outcome (the host CLI explains the missing rule and returns nonzero).
+The explicit `./devloop github --proposal-test` exited zero. It created
+`hermes/integration-f0dc7641e423`, committed one test text file and opened
+[draft PR #2](https://github.com/sevandewater/hermes-dev-loop/pull/2). GitHub
+confirmed the author was `hermes-dev-loop-bot[bot]`, the base was `main`, and the
+PR was draft and unmerged. Commit
+`ba4160ed0c947c42d976d026c574cf7cbf950d47` was App-attributed and GitHub reported
+its signature verified. The PR was then closed and only that disposable branch
+was deleted. No proposal was approved or merged.
 
-## Boundary and persistence coverage
+The official MCP `repository_ruleset_read` tool now supplies the authenticated
+policy reads internally; it is not exposed to Hermes. Public rule reads omit
+bypass information. The pinned MCP server serializes branch rules in go-github's
+grouped format, which the policy normalizes and tests. The App's own inability
+to bypass must be explicit; missing or permissive actor data fails closed. If
+the complete bypass list is visible and nonempty, the policy rejects it too.
+The full list can be hidden from the App, so the broker does not claim to
+continuously verify hidden actors. The human connection verified an empty list.
 
-The extended container suite inspected the four running containers, not only
-Compose configuration. It checked read-only roots, UID, capabilities, seccomp,
-no-new-privileges, CPU/memory/PID limits, unpublished ports, actual bind mounts,
-network peers and unnumbered internal host bridges. Broker-only credential binds
-were read-only; Hermes could not read `/broker-secrets` or the host key.
+The unit tests reject disabled or missing rules, zero approvals, disabled
+code-owner review, stale approvals that survive new commits, visible bypass
+actors (including administrators), and missing/permissive App bypass results.
+Existing branch, path, content, key-storage and CLI checks also passed.
 
-The broker had no IPv4 default route, configured IPv6 address or usable IPv6
-route, and no forwarding/raw-socket capability. Linux's unreachable IPv6 rejection
-entries are explicitly distinguished from usable routes. Its proxy CONNECT to
-GitHub succeeded while PyPI, Nous, arbitrary hosts and private destinations were
-denied. Direct TCP and UDP/TCP DNS attempts were blocked against an external
-canary that Squid had first reached as a positive control. The existing Hermes
-network, DNS, host/private-network and proxy-destination checks passed too.
-A subsequent targeted proxy-denial run also confirmed that Hermes cannot use
-`api.github.com` through its own Squid policy; the broker's separate policy can.
+## CODEOWNERS and bootstrap
 
-The gateway API uses `llm-gateway-api`, a DNS alias scoped only to its inference
-network. Both the Hermes client and trusted gateway self-probes use this name.
-Binding the unmodified upstream server by that alias also satisfies its strict
-Host-header policy; an ordinary dual-network service name resolves the wrong
-self-interface, and an IP-bound upstream rejects foreign hostname headers. The
-repeated boundary check confirms API access through the alias, rejection of a
-foreign Host name, and no listener on the external interface. No upstream
-transport or Host-header validation patch was introduced.
+`.github/CODEOWNERS` assigns all files, including itself, to `@sevandewater`.
+GitHub uses the ownership file on the PR base branch. At this check, main had no
+ownership file, so the configured code-owner checkbox did not yet select a
+specific reviewer. The generic one-review requirement already applies; proposal
+creation is permitted during bootstrap. Owner-specific enforcement starts after
+the file reaches main. Drafts do not automatically request code-owner reviews.
 
-Hermes' workspace, home, memory, skills and executable tools, and the gateway's
-private storage survived recreation. The read-only project reference remained
-readable and rejected writes. The suite removed its own canaries and helper
-containers. Generated evidence stays in ignored `runtime/security-results.json`.
-The build/start and suite logs were captured under `/tmp/` without key or token
-output.
+The original foundation PR #1 is authored by `sevandewater`. GitHub does not
+allow authors to approve their own PR, so it needs another eligible reviewer
+under the no-bypass rule. App-authored proposals can be reviewed by the human
+owner. This change did not replace, re-author or merge the foundation PR.
 
-The local tests use disposable RSA keys and temporary Git repositories. They
-cover App-ID correction without key rotation, symlink/key replacement refusal,
-private modes, source exclusions, the proposal branch namespace, protected file
-paths, private-key content, commit limits and the human-admin-only ruleset policy.
-CLI tests distinguish broker startup, read checks and explicit canary creation,
-and include the enabled broker in lifecycle actions.
+Required review gates acceptance; it does not remove the App's underlying
+Contents-write ability to merge an approved PR. The broker offers no merge,
+approval or auto-merge tool, and tokens remain inside the trusted official MCP
+process. The human explicitly selected this approval boundary.
 
-## Current GitHub protection and remaining acceptance
+## Container and persistence evidence
 
-GitHub reports ruleset `25510073` (`no-direct-main`) **active**, targeting the
-default branch, with PR/review, deletion, force-push, linear-history, signature
-and status-check rules. It has **no `update` rule and an empty bypass list**.
-Review approval alone does not reserve merging for the human. Proposal writes
-therefore remain disabled, independently of successful App authentication.
+The earlier four-service `./devloop test --persistence` completed at 22:57:07 UTC
+(18:57 America/Toronto) with **28 groups PASS**, one real-account group SKIP, and
+one accepted direct-gateway-egress exception. It inspected actual mounts,
+permissions, limits, capabilities, seccomp, network peers, unnumbered bridges,
+routes, DNS and listeners, and used reachable positive-control canaries for
+direct TCP/DNS and host/private-network denial. It verified the read-only source
+reference and persistence of all agent/gateway storage across recreation.
 
-Complete [the ruleset steps](github-app-broker.md#github-must-enforce-human-only-updates),
-then rerun the explicit canary to validate branch creation, commit publication,
-App attribution and draft PR creation. Close the canary afterward; no real merge
-is part of the test. No GitHub rules were changed by this implementation, and no
-App-created proposal branch/commit/PR is claimed as validated yet. Deliberate
-installation-token expiry/refresh and real-credential error/redaction scenarios
-also remain untested. Authentication and refresh are delegated to upstream.
+The inference-only `llm-gateway-api` alias worked for both clients and gateway
+self-probes. Foreign Host headers and the gateway's external listener were
+rejected. A targeted proxy check also denied Hermes direct GitHub API access,
+while the broker's GitHub policy worked. Linux IPv6 rejection entries were
+distinguished from usable routes; the broker had no IPv6 address or usable route.
 
-The existing human-authenticated LLM gateway was checked locally for health;
-this run did not repeat browser OAuth, request paid inference or validate
-provider refresh/streaming. Its separately approved direct-egress exception and
-lack of independent per-agent inference budgets remain unchanged.
+The review-policy update changes broker application code, not mounts, networks,
+Squid policy or gateway configuration. The full persistence suite was not
+repeated for that policy change. The rebuilt broker's network/capability and
+GitHub-only proxy checks were repeated and passed. Generated boundary evidence
+remains in ignored `runtime/security-results.json`; temporary logs are under
+`/tmp/`. Credentials and runtime state are not committed.
 
-## Final local image identities
+## Scope and local image identities
+
+The boundary run used these local images:
 
 - Hermes: `sha256:de23f9daa161d432f7a79b39fa23efb1f31bd524782691fa5ce0736d08b9d341`
 - Squid: `sha256:d6cae5be515ddff05d6d0818e93fa2a5f3cdf8dabf68508030379a167480c31d`
 - LLM gateway: `sha256:adb00f2ea1e009e6bbdd68db34ea3bb7baafa8a7935ad696aa264634f915785c`
-- GitHub broker: `sha256:ac80494da5d0ef9a74089258e806960945ff3af17e73457d600ba0314bfef80a`
+- Earlier broker: `sha256:ac80494da5d0ef9a74089258e806960945ff3af17e73457d600ba0314bfef80a`
+- Broker used for successful review-policy canary: `sha256:07ac301e4660933d90566182ddfaa5e62666046424741eff06557a6bd6691ea9`
 
-These are observed local build identities, not published image references. The
-GitHub release archive is checksum-pinned; OS package repositories remain time
-dependent through the shared foundation build.
+These are local build identities, not published image references. The GitHub
+release archive is checksum-pinned. OS package repositories remain time dependent.
+The previous stricter update/bypass policy blocked the earlier canary; it was
+superseded by the human's review-only decision and is not an installation step.
+
+These checks did not run paid inference, deliberate provider refresh/streaming,
+installation-token expiry/refresh, a real approval or a merge. Real-credential
+error/log behavior remains unverified. The approved gateway direct-egress
+exception and lack of independent inference budgets are unchanged.

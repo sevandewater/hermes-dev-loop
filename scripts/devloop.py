@@ -492,7 +492,7 @@ class DevLoop:
                 self.dc('--profile', 'github', 'up', '-d', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
                 self.dc('exec', '-T', 'hermes', '/opt/hermes/.venv/bin/python', '-I', '-', data=GITHUB_MCP_CONFIGURE)
                 (self.control / 'github-enabled').write_text('enabled\n')
-            print('Broker started and registered. Start a new Hermes chat to discover its tools. Writes require an active human-only update rule; use Check integration.')
+            print('Broker started and registered. Start a new Hermes chat to discover its tools. Writes require active PR/code-owner review rules that the App cannot bypass; use Check integration.')
         elif check or proposal_test:
             self.require_running('hermes', 'github-broker')
             args = [sys.executable, str(self.root / 'tests/check_github_broker.py')]
@@ -500,7 +500,7 @@ class DevLoop:
                 args.append('--proposal')
             with self.administration():
                 self.runner.run(args, capture=False, timeout=150, label='GitHub broker integration', failure_messages={
-                    2: 'Proposal test blocked: enable Restrict updates on main with Repository admin as the only bypass actor, then retry.'})
+                    2: 'Proposal test blocked: main must require PR/code-owner review, dismiss stale approvals, and prevent App bypass.'})
         else:
             print('Credential storage alone does not enable PR publishing. Start the broker, then check its live policy.')
 
@@ -743,7 +743,7 @@ def parser():
             group.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
             group.add_argument("--start", action="store_true", help="Build/start the isolated broker and register its MCP endpoint in Hermes")
             group.add_argument("--check", action="store_true", help="Test real MCP reads and denial paths without creating a proposal")
-            group.add_argument("--proposal-test", action="store_true", help="Create a disposable draft PR only when human-only merge protection passes")
+            group.add_argument("--proposal-test", action="store_true", help="Create a disposable draft PR only when required review rules pass")
     return result
 
 

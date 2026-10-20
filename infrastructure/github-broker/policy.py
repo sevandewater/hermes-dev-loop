@@ -1,9 +1,6 @@
 """Fixed project/branch policy. No credentials, token issuer or agent-controlled URLs."""
-import json
 from pathlib import PurePosixPath
 import re
-import urllib.error
-import urllib.request
 
 OWNER = 'sevandewater'
 REPO = 'hermes-dev-loop'
@@ -40,45 +37,45 @@ def source_path(value, *, writing=False):
     return value
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, *args, **kwargs):
-        return None
+def pull_request_rules(data):
+    # The official MCP server serializes go-github's grouped branch rules;
+    # the REST representation is a flat list. Accept both explicit shapes.
+    if isinstance(data, dict):
+        entries = data.get('PullRequest')
+        entries = [] if entries is None else entries
+        if isinstance(entries, list) and all(isinstance(entry, dict) for entry in entries):
+            return [{**entry, 'type': 'pull_request'} for entry in entries]
+    elif isinstance(data, list) and all(isinstance(entry, dict) for entry in data):
+        return [entry for entry in data if entry.get('type') == 'pull_request']
+    raise PolicyError('GitHub returned invalid branch rules; writes remain blocked.')
 
 
-def public_json(path):
-    if not path.startswith(PREFIX + '/'):
-        raise PolicyError('Repository is outside broker policy.')
-    request = urllib.request.Request('https://api.github.com' + path, headers={
-        'Accept': 'application/vnd.github+json', 'User-Agent': 'hermes-dev-loop-broker',
-    })
-    try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=15) as response:
-            payload = response.read(2_000_001)
-            if len(payload) > 2_000_000:
-                raise ValueError('Response too large')
-            return json.loads(payload)
-    except Exception:
-        raise PolicyError('Cannot verify current GitHub branch rules; writes remain blocked.') from None
-
-
-def merge_protection(fetch=public_json):
-    """GitHub's effective-rules endpoint excludes disabled rulesets. Recheck on every write."""
-    rules = fetch(PREFIX + '/rules/branches/' + BASE)
-    if not isinstance(rules, list):
+def review_protection(fetch):
+    """Effective rules exclude disabled rulesets; the caller authenticates as the App."""
+    rules = pull_request_rules(fetch(PREFIX + '/rules/branches/' + BASE))
+    if not rules:
         raise PolicyError('GitHub returned invalid branch rules; writes remain blocked.')
     for rule in rules:
-        if rule.get('type') != 'update' or not isinstance(rule.get('ruleset_id'), int):
+        if rule.get('type') != 'pull_request' or not isinstance(rule.get('ruleset_id'), int):
+            continue
+        parameters = rule.get('parameters', {})
+        approvals = parameters.get('required_approving_review_count', 0)
+        if (type(approvals) is not int or approvals < 1
+                or parameters.get('require_code_owner_review') is not True
+                or parameters.get('dismiss_stale_reviews_on_push') is not True):
             continue
         details = fetch(PREFIX + '/rulesets/' + str(rule['ruleset_id']))
-        if details.get('enforcement') != 'active':
+        if details.get('enforcement') != 'active' or details.get('current_user_can_bypass') != 'never':
             continue
-        actors = details.get('bypass_actors', [])
-        # On this personal repository, administrator role 5 is the human owner.
-        # No GitHub App, writer role, deploy key or unknown actor may bypass.
-        if actors and all(a.get('actor_type') == 'RepositoryRole' and a.get('actor_id') == 5
-                          and a.get('bypass_mode') in ('always', 'pull_request') for a in actors):
-            return {'human_only_updates': True, 'ruleset_id': details['id']}
-    raise PolicyError('main needs an active Restrict updates rule with human-admin bypass only; writes remain blocked.')
+        if 'bypass_actors' in details and details['bypass_actors'] != []:
+            continue
+        # GitHub may hide the full bypass list. Its authenticated actor result
+        # must explicitly say the App cannot bypass; missing data is not proof.
+        # CODEOWNERS on the base branch determines the actual reviewers.
+        return {'required_approvals': approvals, 'require_code_owner_review': True,
+                'dismiss_stale_approvals': True, 'app_can_bypass': False,
+                'bypass_list_visible': 'bypass_actors' in details, 'ruleset_id': details['id']}
+    raise PolicyError('main needs active PR/code-owner review with stale-approval dismissal and no App bypass; writes remain blocked.')
 
 
 def validate_files(files):

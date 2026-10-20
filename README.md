@@ -143,8 +143,10 @@ identity. Its optional broker uses GitHub's official MCP server for App
 authentication and token refresh. Hermes receives six project-scoped MCP tools;
 it receives neither the private key nor installation tokens. Reads work before
 writes are enabled. Every proposal write checks GitHub's effective rules for an
-active **Restrict updates** rule on `main`, with only human repository
-administrators allowed to bypass. An approval requirement alone is insufficient.
+active PR requirement on `main`: at least one approval, code-owner review, stale
+approval dismissal, and explicit confirmation that the App cannot bypass it.
+The repository keeps an empty bypass list, so the human follows the review rules
+too. GitHub may hide that full list from the App; status reports its visibility.
 The broker rejects writes to `main` and exposes no merge or approval operation.
 See [the workflow](docs/hermes-project-workflow.md) and [App setup](docs/github-app-broker.md).
 
@@ -175,10 +177,12 @@ The gateway API alias exists only on the inference network; upstream uses it for
 both binding and Host-header validation. Fixed addresses remain in network
 assignments and enforcement policy.
 
-Validation on 2026-10-20 confirmed App-authenticated reads, six-tool discovery
-through the real Hermes client, and denied protected operations. Draft-PR
-creation remains blocked until the active `no-direct-main` ruleset also has
-**Restrict updates** and human-admin-only bypass. See [validation](docs/github-broker-validation.md).
+The ruleset gates approval before merge; it does not remove the App's underlying
+Contents-write permission to merge an approved PR. The broker exposes no merge
+operation. `.github/CODEOWNERS` assigns all files to `@sevandewater` and takes
+effect when merged into `main`; GitHub uses the base branch's ownership file.
+See [validation](docs/github-broker-validation.md) for live reads, denied
+operations and proposal checks.
 
 ## Prerequisites
 

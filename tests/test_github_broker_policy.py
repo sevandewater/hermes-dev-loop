@@ -9,26 +9,67 @@ spec.loader.exec_module(policy)
 
 
 class BrokerPolicyTests(unittest.TestCase):
-    def fetch(self, *, actors=None, active=True, effective=True):
+    def fetch(self, *, actors=None, active=True, effective=True, parameters=None):
         def read(path):
             if '/rules/branches/' in path:
-                return [{'type': 'update', 'ruleset_id': 42}] if effective else []
-            return {'id': 42, 'enforcement': 'active' if active else 'disabled', 'bypass_actors': actors or []}
+                return [{'type': 'pull_request', 'ruleset_id': 42, 'parameters': parameters if parameters is not None else {
+                    'required_approving_review_count': 1, 'require_code_owner_review': True,
+                    'dismiss_stale_reviews_on_push': True}}] if effective else []
+            return {'id': 42, 'enforcement': 'active' if active else 'disabled', 'bypass_actors': actors or [],
+                    'current_user_can_bypass': 'never'}
         return read
 
-    def test_human_admin_only_update_rule_is_required(self):
-        admin = {'actor_type': 'RepositoryRole', 'actor_id': 5, 'bypass_mode': 'pull_request'}
-        self.assertTrue(policy.merge_protection(self.fetch(actors=[admin]))['human_only_updates'])
-        for fetch in (self.fetch(), self.fetch(actors=[admin], active=False), self.fetch(actors=[admin], effective=False)):
+    def test_active_review_rule_with_no_bypass_enables_proposals(self):
+        protection = policy.review_protection(self.fetch())
+        self.assertEqual(protection['required_approvals'], 1)
+        self.assertFalse(protection['app_can_bypass'])
+        for fetch in (self.fetch(active=False), self.fetch(effective=False)):
             with self.assertRaises(policy.PolicyError):
-                policy.merge_protection(fetch)
+                policy.review_protection(fetch)
 
-    def test_app_or_writer_bypass_rejects_even_with_human_admin(self):
-        admin = {'actor_type': 'RepositoryRole', 'actor_id': 5, 'bypass_mode': 'always'}
-        for extra in ({'actor_type': 'Integration', 'actor_id': policy.APP_ID, 'bypass_mode': 'always'},
+    def test_admin_app_or_writer_bypass_rejects(self):
+        for actor in ({'actor_type': 'RepositoryRole', 'actor_id': 5, 'bypass_mode': 'pull_request'},
+                      {'actor_type': 'Integration', 'actor_id': policy.APP_ID, 'bypass_mode': 'always'},
                       {'actor_type': 'RepositoryRole', 'actor_id': 3, 'bypass_mode': 'always'}):
             with self.assertRaises(policy.PolicyError):
-                policy.merge_protection(self.fetch(actors=[admin, extra]))
+                policy.review_protection(self.fetch(actors=[actor]))
+
+    def test_approval_owner_and_stale_review_requirements_cannot_be_weakened(self):
+        good = {'required_approving_review_count': 1, 'require_code_owner_review': True,
+                'dismiss_stale_reviews_on_push': True}
+        for key, value in [('required_approving_review_count', 0), ('require_code_owner_review', False),
+                           ('dismiss_stale_reviews_on_push', False)]:
+            with self.subTest(key=key), self.assertRaises(policy.PolicyError):
+                policy.review_protection(self.fetch(parameters={**good, key: value}))
+        for missing in good:
+            with self.subTest(missing=missing), self.assertRaises(policy.PolicyError):
+                policy.review_protection(self.fetch(parameters={k: v for k, v in good.items() if k != missing}))
+
+    def test_hidden_bypass_list_requires_explicit_authenticated_no_bypass_result(self):
+        fetch = self.fetch()
+        def hidden(path, permission):
+            data = fetch(path)
+            if isinstance(data, dict):
+                data.pop('bypass_actors')
+                data['current_user_can_bypass'] = permission
+            return data
+        result = policy.review_protection(lambda path: hidden(path, 'never'))
+        self.assertFalse(result['bypass_list_visible'])
+        for permission in (None, 'always', 'pull_requests_only'):
+            with self.subTest(permission=permission), self.assertRaises(policy.PolicyError):
+                policy.review_protection(lambda path: hidden(path, permission))
+
+    def test_official_mcp_grouped_branch_rule_shape_is_validated(self):
+        fetch = self.fetch()
+        def grouped(path):
+            data = fetch(path)
+            if isinstance(data, list):
+                return {'PullRequest': [{k: v for k, v in data[0].items() if k != 'type'}], 'Deletion': []}
+            return data
+        self.assertEqual(policy.review_protection(grouped)['required_approvals'], 1)
+        for data in ({'PullRequest': None}, {'PullRequest': 'invalid'}, {'PullRequest': [None]}, [None]):
+            with self.subTest(data=data), self.assertRaises(policy.PolicyError):
+                policy.review_protection(lambda path: data)
 
     def test_only_proposal_branches_are_writable(self):
         self.assertEqual(policy.proposal_branch('hermes/improve-tools'), 'hermes/improve-tools')
