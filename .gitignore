@@ -2,6 +2,11 @@
 .env.*
 !.env.example
 /runtime/
+# Credentials belong in private host storage, never in committed project source.
+.github-private.key
+*.key
+*.pem
+/secrets/
 __pycache__/
 *.py[cod]
 .venv/

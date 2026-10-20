@@ -29,6 +29,7 @@ Every menu action is also available as a command:
 | `test` | Run security checks; `--persistence` explicitly recreates containers, `--authenticated` checks real model access |
 | `rebuild` | Build the pinned images and recreate services, retaining runtime data |
 | `project` | Show/refresh the read-only committed source reference, or prepare a separate writable checkout |
+| `github` | Prepare host-only GitHub App metadata and import a downloaded PEM; publishing remains disabled |
 | `help` | Show commands and examples |
 
 The host tool uses only Python's standard library. The selected model lives in
@@ -132,12 +133,21 @@ checkout is preserved and must be managed from Hermes. A writable checkout allow
 source edits; it does not grant control of the running infrastructure. Native
 Docker/Compose boundary tests still require a human host administrator.
 
-The intended remote workflow uses a separate GitHub bot account and its own fork.
-It must have no write/admin access to `sevandewater/hermes-dev-loop`. Hermes pushes
-proposals to that fork; the human reviews and merges upstream, pulls locally and
-explicitly applies the changes. **PR publishing has not been enabled or validated**:
-the bot identity and credential setup are still pending. No human GitHub credentials
-were copied into Hermes. See [the workflow and account requirements](docs/hermes-project-workflow.md).
+The human has registered a dedicated GitHub App, `hermes-dev-loop-bot`, for remote
+proposals. A GitHub App is a separate identity and does not require a separate
+human bot account. **PR publishing has not been enabled or validated**: the isolated
+MCP broker, actual App authentication and human-only merge enforcement remain
+pending. No human GitHub credentials were copied into Hermes. See
+[the workflow](docs/hermes-project-workflow.md) and [App setup](docs/github-app-broker.md).
+
+Choose **github** from `./devloop` for guided ID configuration and downloaded-key
+import, or run `./devloop github --setup`. The tool stores the App metadata and PEM
+in `~/.config/hermes-dev-loop/`, outside the repository and all current service
+mounts. The directory is mode `0700`; configuration and key files are `0600`.
+It rejects fingerprints, malformed/encrypted/non-RSA keys and symlinks, and never
+prints the key. Git ignores key files, and source exports reject key filenames
+and PEM private-key headers even if accidentally committed. This is additional
+protection against these key formats, not a general-purpose secret scanner.
 
 ## Prerequisites
 

@@ -50,11 +50,14 @@ otherwise a proposal may unintentionally include the entire unmerged foundation.
 
 ## GitHub identity required before publishing
 
-Remote publishing remains disabled. The next setup step requires a separate
-GitHub bot account, or a separately reviewed GitHub App configuration. The host's
-existing GitHub identity has administrative access and must not be reused by Hermes.
+The human has now created and installed `hermes-dev-loop-bot`, a dedicated GitHub
+App. This provides a separate identity without requiring another human GitHub
+account. [App credential setup and the planned MCP broker](github-app-broker.md)
+supersede the bot-account setup below. Remote publishing remains disabled until
+the actual App ID/key, restricted broker and human-only merge enforcement have
+been validated. The host's existing administrative GitHub identity is not reused.
 
-For the straightforward public-repository fork workflow:
+The previously proposed public-repository fork workflow was:
 
 1. Create or choose a dedicated GitHub bot account with no access to unrelated
    private repositories. The human retains account recovery and administration.

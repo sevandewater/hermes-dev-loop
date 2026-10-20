@@ -152,7 +152,7 @@ class DevLoopTests(unittest.TestCase):
         self.assertFalse((reference / ".git").exists())
         self.assertFalse((reference / "runtime").exists())
         self.assertNotIn("uncommitted-local-change", (reference / "scripts/init-runtime.py").read_text())
-        self.assertIn("separate bot identity", self.output.getvalue())
+        self.assertIn("isolated App broker", self.output.getvalue())
         self.assertFalse(any("up" in args for args in self.commands()))
 
     def test_project_checkout_runs_only_inside_hermes(self):
@@ -176,6 +176,32 @@ class DevLoopTests(unittest.TestCase):
         with patch("scripts.devloop.terminal", return_value=True), patch("builtins.input", return_value="2"):
             self.app.project()
         self.assertIn("Prepare a new writable checkout", self.output.getvalue())
+
+    def test_github_status_has_no_docker_or_remote_actions(self):
+        store = devloop.AppSettings(self.root / 'private/github')
+        with patch('scripts.devloop.AppSettings', return_value=store), patch('scripts.devloop.terminal', return_value=False):
+            self.app.github()
+        self.assertIn('PR publishing disabled', self.output.getvalue())
+        self.assertEqual(self.runner.calls, [])
+        self.assertFalse(store.directory.exists())
+
+    def test_github_setup_requires_a_terminal_before_changing_configuration(self):
+        store = devloop.AppSettings(self.root / 'private/github')
+        with patch('scripts.devloop.AppSettings', return_value=store), patch('scripts.devloop.terminal', return_value=False):
+            with self.assertRaisesRegex(devloop.Error, 'interactive terminal'):
+                self.app.github(setup=True)
+        self.assertFalse(store.directory.exists())
+
+    def test_github_setup_preserves_known_installation_and_does_not_enable_publishing(self):
+        store = devloop.AppSettings(self.root / 'private/github')
+        store.configure(installation_id=173550314)
+        with patch('scripts.devloop.AppSettings', return_value=store), patch('scripts.devloop.terminal', return_value=True), \
+             patch('builtins.input', side_effect=['12345', '', '']):
+            self.app.github(setup=True)
+        self.assertEqual(store.load()['app_id'], '12345')
+        self.assertEqual(store.load()['installation_id'], 173550314)
+        self.assertFalse(store.status()['publishing_enabled'])
+        self.assertEqual(self.runner.calls, [])
 
     def test_model_survives_a_new_cli_instance_outside_agent_mounts(self):
         self.app.save_model("nous/model-a")

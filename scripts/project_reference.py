@@ -3,6 +3,7 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import subprocess
 import tarfile
@@ -10,6 +11,7 @@ import tempfile
 
 PROJECT_REPO = "sevandewater/hermes-dev-loop"
 REFERENCE_NAME = "hermes-dev-loop"
+PRIVATE_KEY_HEADER = re.compile(rb"(?m)^-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----\r?$")
 
 
 class ReferenceError(Exception):
@@ -25,11 +27,13 @@ def git(root, *args):
 
 def safe_member(member):
     name = PurePosixPath(member.name)
-    blocked = {".git", "runtime", ".ssh", ".aws", ".gnupg", ".netrc"}
+    blocked = {".git", "runtime", "secrets", ".ssh", ".aws", ".gnupg", ".netrc"}
     if name.is_absolute() or not name.parts or any(part in ("..", ".") or part.lower() in blocked for part in name.parts):
         raise ReferenceError("The committed source contains a protected path; reference was not updated.")
     if any((part == ".env" or part.startswith(".env.")) and part != ".env.example" for part in name.parts):
         raise ReferenceError("The committed source contains a private environment path; reference was not updated.")
+    if name.suffix.lower() in (".key", ".pem"):
+        raise ReferenceError("The committed source contains a key file; reference was not updated.")
     if not member.isfile() and not member.isdir():
         raise ReferenceError("The committed source contains a link or special file; reference was not updated.")
     return name
@@ -71,7 +75,12 @@ def publish(root):
                 else:
                     path.parent.mkdir(parents=True, exist_ok=True)
                     with source.extractfile(member) as content, path.open("xb") as target:
-                        shutil.copyfileobj(content, target)
+                        tail = b""
+                        while chunk := content.read(1_048_576):
+                            if PRIVATE_KEY_HEADER.search(tail + chunk):
+                                raise ReferenceError("The committed source contains private-key PEM data; reference was not updated.")
+                            target.write(chunk)
+                            tail = chunk[-128:]
                     path.chmod(0o700 if member.mode & 0o111 else 0o600)
         (temporary / ".devloop-reference.json").write_text(json.dumps({
             "repository": PROJECT_REPO, "revision": revision,

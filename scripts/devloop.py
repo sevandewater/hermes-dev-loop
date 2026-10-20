@@ -17,6 +17,7 @@ import time
 from urllib.parse import urlsplit, urlunsplit
 
 from scripts.project_reference import PROJECT_REPO, ReferenceError, publish as publish_reference
+from scripts.github_app import AppError, AppSettings
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = "hermes-dev-loop"
@@ -36,6 +37,7 @@ ACTIONS = {
     "test": "Run security checks",
     "rebuild": "Rebuild pinned images and recreate services",
     "project": "Inspect or refresh the read-only project reference",
+    "github": "Prepare host-only GitHub App credentials (publishing pending)",
     "help": "Show commands and examples",
 }
 
@@ -415,7 +417,7 @@ class DevLoop:
         print(f"Repository: {info['repository']}")
         print(f"Reference commit: {info['revision']}")
         print("Hermes can read /reference/hermes-dev-loop; changes belong in a separate /workspace checkout.")
-        print("GitHub PR publishing requires a separate bot identity without write access to the upstream repository.")
+        print("GitHub PR publishing is disabled pending the isolated App broker and verified human-only merge controls.")
         if checkout:
             self.require_running("hermes", "squid")
             with self.administration():
@@ -425,6 +427,34 @@ class DevLoop:
                     raise Error("Writable project checkout already exists; existing work was preserved.")
                 self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-", info["revision"],
                         data=PROJECT_CHECKOUT, capture=False, timeout=120)
+
+    def github(self, setup=False):
+        store = AppSettings()
+        try:
+            if not setup and terminal():
+                print("1. Show GitHub App setup status\n2. Configure App IDs and import a downloaded PEM")
+                choice = input("GitHub action [1]: ").strip() or "1"
+                if choice not in ("1", "2"):
+                    raise Error("Choose one of the listed GitHub actions.")
+                setup = choice == "2"
+            if setup:
+                require_terminal("github")
+                previous = store.load()
+                print("Use the App settings page for IDs. Enter only the downloaded PEM's file path, never key contents.")
+                app_id = input(f"App ID or client ID [{previous.get('app_id', '')}]: ").strip() or previous.get("app_id")
+                installation_id = input(f"Installation ID or settings URL [{previous.get('installation_id', '')}]: ").strip() or previous.get("installation_id")
+                key_file = input("Downloaded private-key PEM path (Enter keeps existing key): ").strip()
+                if not app_id or not installation_id:
+                    raise Error("Both App ID and installation ID are required. Existing configuration was preserved.")
+                with self.administration():
+                    store.configure(app_id=app_id, installation_id=installation_id, key_file=key_file)
+            info = store.status()
+        except AppError as error:
+            raise Error(str(error)) from None
+        print(f"App ID: {info['app_id'] or 'not configured'}")
+        print(f"Installation ID: {info['installation_id'] or 'not configured'}")
+        print(f"Private key: {'stored locally' if info['key_present'] else 'not imported'} ({info['key_path']})")
+        print("PR publishing disabled: broker integration and human-only merge enforcement still require validation.")
 
     def start_services(self):
         self.runtime_check()
@@ -654,6 +684,8 @@ def parser():
         elif name == "project":
             action.add_argument("--refresh", action="store_true", help="Export committed host HEAD; uncommitted and untracked files stay private")
             action.add_argument("--checkout", action="store_true", help="Fetch the reference commit into a new writable /workspace checkout; preserves existing work")
+        elif name == "github":
+            action.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
     return result
 
 

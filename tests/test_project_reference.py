@@ -61,12 +61,13 @@ class ProjectReferenceTests(unittest.TestCase):
     def test_tracked_private_paths_are_rejected_without_replacing_reference(self):
         publish(self.root)
         previous = self.reference.resolve()
-        for name in ('.env', '.env.production', 'runtime/gateway/auth.json', '.ssh/id_rsa'):
+        for name in ('.env', '.env.production', 'runtime/gateway/auth.json', '.ssh/id_rsa',
+                     '.github-private.key', 'credentials/app.PEM', 'secrets/credential.txt'):
             with self.subTest(name=name):
                 path = self.root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('dummy-sensitive-fixture')
-                self.git('add', name)
+                self.git('add', '-f', name)
                 self.commit()
                 with self.assertRaises(ReferenceError):
                     publish(self.root)
@@ -74,6 +75,18 @@ class ProjectReferenceTests(unittest.TestCase):
                 self.assertFalse((self.reference / name).exists())
                 self.git('rm', name)
                 self.commit()
+
+    def test_private_key_header_in_an_ordinary_filename_rejects_export(self):
+        publish(self.root)
+        previous = self.reference.resolve()
+        header = '-----BEGIN ' + 'PRIVATE KEY-----'
+        (self.root / 'ordinary.txt').write_text(header + '\ndummy-invalid-data\n')
+        self.git('add', 'ordinary.txt')
+        self.commit()
+        with self.assertRaisesRegex(ReferenceError, 'private-key PEM data'):
+            publish(self.root)
+        self.assertEqual(self.reference.resolve(), previous)
+        self.assertFalse((self.reference / 'ordinary.txt').exists())
 
     def test_tracked_symlink_is_rejected_without_following_target(self):
         publish(self.root)
