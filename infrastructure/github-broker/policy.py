@@ -1,6 +1,38 @@
 """Fixed project/branch policy. No credentials, token issuer or agent-controlled URLs."""
 from pathlib import PurePosixPath
 import re
+import unicodedata
+
+
+def issue_number(value):
+    if type(value) is not int or not 1 <= value <= 2_147_483_647:
+        raise PolicyError('Issue number must be a positive 32-bit integer.')
+    return value
+
+
+def issue_text(value, *, title=False):
+    limit = 200 if title else 20_000
+    if (not isinstance(value, str) or len(value) > limit or (title and not value.strip())
+            or any((unicodedata.category(c).startswith('C') and c not in ('\n', '\t'))
+                   or c in '\u00ad' or 0xFE00 <= ord(c) <= 0xFE0F or 0xE0100 <= ord(c) <= 0xE01EF for c in value)
+            or (title and any(c in value for c in ('<', '>', '&', '`', '\n', '\t')))):
+        raise PolicyError('Invalid issue text: title <=200, body/comment <=20000; use visible text and LF newlines.')
+    return value
+
+
+def issue_request_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', value):
+        raise PolicyError('Provide a lowercase UUID request_id; reuse it on retries.')
+    return value
+
+
+def issue_labels(value):
+    if (not isinstance(value, list) or len(value) > 20
+            or any(not isinstance(i, str) or not i.strip() or len(i) > 50
+                   or any(unicodedata.category(c).startswith('C') for c in i) for i in value)
+            or len(set(value)) != len(value)):
+        raise PolicyError('Provide up to 20 unique existing label names, <=50 characters each.')
+    return value
 
 OWNER = 'sevandewater'
 REPO = 'hermes-dev-loop'

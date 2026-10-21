@@ -12,7 +12,8 @@ with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
     pathlib.Path('/usr/local/bin/github-mcp-server').write_bytes(archive.extractfile(member).read())
 pathlib.Path('/usr/local/bin/github-mcp-server').chmod(0o755)
 PY
-COPY server.py policy.py /opt/github-broker/
+COPY server.py policy.py issue_management.py /opt/github-broker/
+RUN mkdir /broker-state && chown 1000:1000 /broker-state && chmod 700 /broker-state
 USER 1000:1000
 WORKDIR /tmp
 ENTRYPOINT ["/opt/hermes/.venv/bin/python", "/opt/github-broker/server.py"]

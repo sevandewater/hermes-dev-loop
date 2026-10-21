@@ -29,7 +29,7 @@ Every menu action is also available as a command:
 | `test` | Run security checks; `--persistence` explicitly recreates containers, `--authenticated` checks real model access |
 | `rebuild` | Build the pinned images and recreate services, retaining runtime data |
 | `project` | Show/refresh the read-only committed source reference, or prepare a separate writable checkout |
-| `github` | Configure the GitHub App, start its isolated MCP broker, or check reads and draft proposals |
+| `github` | Configure the GitHub App, start its isolated MCP broker, or check reads and draft proposals; issue tools are available after broker activation |
 | `help` | Show commands and examples |
 
 The host tool uses only Python's standard library. The selected model lives in
@@ -140,7 +140,7 @@ Docker/Compose boundary tests still require a human host administrator.
 
 The dedicated GitHub App `hermes-dev-loop-bot` supplies the separate proposal
 identity. Its optional broker uses GitHub's official MCP server for App
-authentication and token refresh. Hermes receives six project-scoped MCP tools;
+authentication and token refresh. Hermes receives thirteen project-scoped MCP tools (proposals and issue management);
 it receives neither the private key nor installation tokens. Reads work before
 writes are enabled. Every proposal write checks GitHub's effective rules for an
 active PR requirement on `main`: at least one approval, code-owner review, stale
@@ -148,7 +148,10 @@ approval dismissal, and explicit confirmation that the App cannot bypass it.
 The repository keeps an empty bypass list, so the human follows the review rules
 too. GitHub may hide that full list from the App; status reports its visibility.
 The broker rejects writes to `main` and exposes no merge or approval operation.
-See [the workflow](docs/hermes-project-workflow.md) and [App setup](docs/github-app-broker.md).
+Issue tools list/search/read full discussions, create issues, update title/body,
+change existing labels and comment, with exact readback and durable replay guards.
+No issue close/delete or label creation is exposed. See [the workflow](docs/hermes-project-workflow.md)
+and [App setup, limits and explicit human canary](docs/github-app-broker.md#issue-management-and-replay-safety).
 
 Choose **github** from `./devloop` for guided ID configuration and downloaded-key
 import, or run `./devloop github --setup`. The tool stores the App metadata and PEM
