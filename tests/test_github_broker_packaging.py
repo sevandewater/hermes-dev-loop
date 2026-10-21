@@ -6,6 +6,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_copied_python_sources_are_allowed_in_build_context(self):
+        broker = ROOT / 'infrastructure/github-broker'
+        rules = [line.strip() for line in (broker / '.dockerignore').read_text().splitlines()
+                 if line.strip() and not line.lstrip().startswith('#')]
+        # This context uses a deny-all followed by explicit file exceptions.
+        self.assertEqual(rules[0], '*')
+        self.assertTrue(all(rule.startswith('!') for rule in rules[1:]))
+        allowed = {rule[1:] for rule in rules[1:]}
+        sources = []
+        for line in (broker / 'Dockerfile').read_text().splitlines():
+            parts = line.split()
+            if parts and parts[0].upper() == 'COPY' and not any(
+                    part.startswith('--from=') for part in parts[1:]):
+                sources.extend(part for part in parts[1:-1] if part.endswith('.py'))
+        self.assertTrue(sources, 'Expected explicit local Python COPY sources')
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertIn(source, allowed, f'{source} excluded from build context')
+                self.assertTrue((broker / source).is_file())
+
     def test_adapter_is_packaged_with_private_persistent_broker_only_state(self):
         dockerfile = (ROOT / 'infrastructure/github-broker/Dockerfile').read_text()
         compose = (ROOT / 'compose.yaml').read_text()
