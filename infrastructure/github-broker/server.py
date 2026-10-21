@@ -1,8 +1,12 @@
 """Narrow MCP policy adapter around the maintained GitHub MCP stdio server."""
 from contextlib import asynccontextmanager
+import asyncio
 import json
 import os
 import socket
+from typing import Annotated
+
+from pydantic import Field
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -11,10 +15,12 @@ from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
+from issue_management import Issues
+
 from policy import APP_ID, BASE, OWNER, REPO, PREFIX, PolicyError, review_protection, pull_request_rules, proposal_branch, source_path, validate_files
 
 UPSTREAM_TOOLS = ('get_file_contents', 'pull_request_read', 'create_branch', 'push_files', 'create_pull_request',
-                  'repository_ruleset_read')
+                  'repository_ruleset_read', 'list_issues', 'issue_read', 'issue_write', 'list_label', 'add_issue_comment')
 
 
 @asynccontextmanager
@@ -134,6 +140,61 @@ async def open_proposal_pull_request(branch: str, title: str, body: str, ctx: Co
     await current_review_protection(ctx)
     return await backend(ctx, 'create_pull_request', {'head': branch, 'base': BASE, 'title': title, 'body': body,
         'draft': True, 'maintainer_can_modify': True})
+
+
+issue_mutation_lock = asyncio.Lock()
+# Reject coercible identifiers before the SDK can turn them into a different target.
+IssueNumber = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]
+
+
+def issues(ctx):
+    return Issues(lambda name, args: backend(ctx, name, args))
+
+
+@server.tool()
+async def list_project_issues(ctx: Context, query: str = '', state: str = 'all', after: str = '') -> dict:
+    """List/search issue titles/bodies by literal substring, excluding PRs. Follow next_cursor even on empty pages."""
+    return await issues(ctx).list(query, state, after)
+
+
+@server.tool()
+async def read_project_issue(number: IssueNumber, ctx: Context) -> dict:
+    """Read exact issue metadata and all comment pages. Fails rather than silently truncates."""
+    return await issues(ctx).read(number)
+
+
+@server.tool()
+async def list_project_labels(ctx: Context) -> dict:
+    """List existing repository labels. Fails if upstream's 100-label catalog is incomplete."""
+    return await issues(ctx).available_labels()
+
+
+@server.tool()
+async def create_project_issue(title: str, body: str, request_id: str, ctx: Context) -> dict:
+    """Create and read back an issue. Supply a lowercase UUID; retries MUST reuse that ID and exact payload."""
+    async with issue_mutation_lock:
+        return await issues(ctx).create(title, body, request_id)
+
+
+@server.tool()
+async def update_project_issue(number: IssueNumber, ctx: Context, title: str | None = None, body: str | None = None) -> dict:
+    """Update only title/body and verify exact readback. No state changes; empty-body clearing is unsupported upstream."""
+    async with issue_mutation_lock:
+        return await issues(ctx).update(number, title, body)
+
+
+@server.tool()
+async def change_project_issue_labels(number: IssueNumber, add: list[str], remove: list[str], ctx: Context) -> dict:
+    """Add/remove exact existing labels, preserving unrelated labels; verify exact readback. No label creation."""
+    async with issue_mutation_lock:
+        return await issues(ctx).labels(number, add, remove)
+
+
+@server.tool()
+async def comment_on_project_issue(number: IssueNumber, body: str, request_id: str, ctx: Context) -> dict:
+    """Add/read back an issue comment. Reuse the same lowercase UUID and payload when reconciling any failure."""
+    async with issue_mutation_lock:
+        return await issues(ctx).comment(number, body, request_id)
 
 
 @server.custom_route('/health', methods=['GET'])

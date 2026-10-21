@@ -164,6 +164,7 @@ services:
       development:
         ipv4_address: 10.237.80.4
     volumes:
+      - github-broker-state:/broker-state
       - type: bind
         source: ${HOME}/.config/hermes-dev-loop/github-app.pem
         target: /broker-secrets/github-app.pem
@@ -181,6 +182,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+
+volumes:
+  github-broker-state:
 
 networks:
   development:

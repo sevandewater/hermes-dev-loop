@@ -55,10 +55,11 @@ require a reviewed artifact/digest change.
 
 A small policy adapter uses that SDK's Streamable HTTP server and stdio client.
 Its fixed upstream allowlist is exactly `get_file_contents`, `pull_request_read`,
-`create_branch`, `push_files`, `create_pull_request`, `repository_ruleset_read`;
+`create_branch`, `push_files`, `create_pull_request`, `repository_ruleset_read`,
+`list_issues`, `issue_read`, `issue_write`, `list_label`, `add_issue_comment`;
 startup verifies the actual tool set. The ruleset read tool is used internally
 for authenticated policy checks and is not exposed to Hermes. Agent-controlled arguments cannot choose the owner, repository,
-credential, upstream command or API URL. Six tools are exposed to Hermes:
+credential, upstream command or API URL. Thirteen tools are exposed to Hermes:
 
 | Tool | Boundary |
 | --- | --- |
@@ -68,12 +69,124 @@ credential, upstream command or API URL. Six tools are exposed to Hermes:
 | `create_proposal_branch` | Create only `hermes/` branches, based on `main` |
 | `commit_proposal_files` | Write at most 50 text files / 1 MB to a proposal branch |
 | `open_proposal_pull_request` | Open a draft PR against fixed base `main` |
+| `list_project_issues` | Cursor-paged issue-only list; optional literal title/body substring search |
+| `read_project_issue` | Exact issue metadata and full explicitly paginated discussion; fails on truncation |
+| `list_project_labels` | Complete existing label catalog (upstream maximum 100) |
+| `create_project_issue` | Title/body only; durable request UUID and exact readback |
+| `update_project_issue` | Only title/body; rejects PR targets and verifies readback |
+| `change_project_issue_labels` | Existing-label add/remove deltas; preserves unrelated labels |
+| `comment_on_project_issue` | Issue-only comment with durable request UUID and exact readback |
 
-All three write tools recheck GitHub protection before their operation. Protected
+All three proposal write tools recheck GitHub protection before their operation. Protected
 paths, key files, traversal and workflow writes are rejected. PEM private-key
 content is rejected from commits. There is no merge, approval, auto-merge,
 branch-delete, workflow, administrative, generic API or command-execution tool.
 Backend errors are sanitized; upstream stderr is not forwarded to agent logs.
+
+## Issue management and replay safety
+
+Issue mutations are independent of the branch-review readiness check: they cannot
+change code, PRs, review rules, issue state, repository labels or administration.
+The original proposal checks are unchanged. Every targeted issue mutation first
+reads metadata and requires the exact project `/issues/N` URL (upstream's minimal
+issue response drops the REST `pull_request` marker, so absence of that field is
+not sufficient). No close/delete, assignment, milestone or reaction argument is exposed.
+
+`list_project_issues(query='', state='all', after='')` uses upstream GraphQL
+`repository.issues`, which excludes PRs. Search is a case-insensitive **literal
+substring of title/body**, not GitHub search syntax or comment search. Follow
+`next_cursor` until null, even when a filtered page is empty. Pages contain up to
+100 issues. `read_project_issue` fetches comment pages explicitly with `page=N`,
+`perPage=100`, stopping on a short page. Duplicate IDs, failed pages, inconsistent
+metadata counts and the 100-page safety ceiling fail rather than report partial
+discussion as complete. Reads are not transactional snapshots during concurrent edits.
+
+Input limits: issue numbers are positive 32-bit integers; titles are 1–200
+characters; body/comment input is at most 20,000 characters; queries 200;
+cursors 2,000; each add/remove list at most 20 unique label names of at most 50
+characters. Titles exclude HTML/entity/backtick markup and newlines. Text rejects
+hidden/control characters and variation selectors to avoid upstream sanitization
+changing exact readback (use LF, not CRLF). Bodies support Markdown and HTML.
+Upstream v2.0.2 cannot clear an existing body using an empty string; the broker
+rejects that operation rather than falsely claiming success. Omitted update
+fields remain untouched. Comments must not be blank.
+
+Create/comment require a caller-generated lowercase UUID `request_id`, retained
+with the exact original payload. The broker appends a hidden HTML request marker
+to the published body and durably reserves the UUID + payload hash in SQLite
+**before dispatch**. Only the first invocation may send the non-idempotent write.
+Every invocation scans/readbacks for the exact marked content and target; even a
+returned upstream success is not proof. Lost responses are reconciled by reads,
+not blind retries. Changed payload with an existing UUID is refused. A retry
+using the same UUID can only reconcile, never send again, including after restart.
+If failure occurred before dispatch, this conservative choice sacrifices automatic
+progress: a human must establish the outcome before authorizing a new UUID.
+Editing/removing the marker/content also makes replay unresolved, not a new write.
+This is at-most-one dispatch per UUID while the journal is retained, **not**
+end-to-end exactly-once GitHub delivery. Different UUIDs can create duplicates.
+
+The broker-only named Docker volume `github-broker-state` at `/broker-state`
+retains the journal across recreation. The directory is mode 0700, database 0600;
+only request IDs and hashes are stored, not credentials or issue bodies. Do not
+remove/restore an older journal and then retry uncertain requests; that loses
+replay protection. Keep one broker instance. SQLite serializes reservations and
+an in-process lock serializes issue mutations. There is no background retry loop,
+controller, token store or backup service.
+
+Title/body and label updates are idempotent desired-state operations: first read,
+skip an already-satisfied request, otherwise write once, then exact readback even
+on sanitized backend errors. Label deltas merge with current labels, validate
+against the complete existing catalog, and re-read immediately before replacement.
+The pinned official tools only support label replacement, not atomic deltas/CAS;
+external edits in the final read/write window can still be overwritten. Coordinate
+concurrent human label edits. A mismatch fails, never silently retries a stale set.
+`list_label` is capped at 100 without pagination; incomplete catalogs block label
+operations instead of guessing or creating labels.
+
+### Human activation and acceptance (not executed by this implementation)
+
+After independent review/merge, the human rebuilds/activates the broker with
+`./devloop github --start`, opens a fresh Hermes session, and runs
+`./devloop github --check` (discovery, real issue #3/full discussion, labels and PR
+denials, no remote mutations). Source edits alone do not activate these tools.
+Then, **only with separate explicit human authorization**, run on the host:
+
+```bash
+# Generate ONCE and retain the printed UUID before executing the canary:
+python3 -c 'import uuid; print(uuid.uuid4())'
+python3 tests/check_github_broker.py --issue-canary YOUR_RETAINED_LOWERCASE_UUID
+```
+
+The canary needs two existing repository labels; it never creates labels. It
+creates one disposable issue, checks create replay, updates title/body, verifies
+label add/remove preserves an unrelated label, posts/replays one comment, and
+reads the exact issue/discussion. On failure retain the UUID and inspect the
+issue before further action; do not blindly rerun with a new UUID. Once the canary
+has edited its creation body/title, the original create replay intentionally
+cannot reconcile, so a full rerun is not a recovery controller. Resolve later
+steps using the existing issue and retained request IDs. The human closes the
+canary afterward; the broker cannot close it. Re-run host security checks and
+verify journal persistence across broker recreation. Docker/runtime networking,
+App-authenticated reads/mutations and token refresh remain host/live checks.
+
+### Verified upstream contract
+
+The implementation inspected the actual v2.0.2 source and ran credential-free
+`initialize` + `tools/list` on the SHA256-verified official Linux amd64 binary.
+All eleven allowlisted upstream tools were discovered exactly; no GitHub API
+read/write was sent by that discovery. Source references:
+
+- [issues.go](https://github.com/github/github-mcp-server/blob/v2.0.2/pkg/github/issues.go): `IssueRead`, `ListIssues`, `IssueWrite`, comments pagination and empty-body limitation.
+- [consolidated_issue_types.go](https://github.com/github/github-mcp-server/blob/v2.0.2/pkg/github/consolidated_issue_types.go): modern method-wrapped issue/comment outputs.
+- [typed_output.go](https://github.com/github/github-mcp-server/blob/v2.0.2/pkg/inventory/typed_output.go): modern structured/text versus legacy text protocol contracts (both tested).
+- [labels.go](https://github.com/github/github-mcp-server/blob/v2.0.2/pkg/github/labels.go): `list_label`, 100-label cap and `totalCount`.
+- [minimal_types.go](https://github.com/github/github-mcp-server/blob/v2.0.2/pkg/github/minimal_types.go): issue URLs, string label arrays, numeric comment IDs and camelCase `pageInfo`.
+
+Local deterministic tests require no credentials. Run `python3 -m unittest discover
+-s tests -p 'test_*.py' -v`; SDK-dependent adapter registration tests skip when MCP
+is absent. Run the same suite with `/opt/hermes/.venv/bin/python` in the pinned
+Hermes environment to exercise the real MCP SDK 2.3.0 as well. No floating SDK
+installation is needed.
 
 ## Runtime and credential boundary
 
@@ -90,7 +203,7 @@ permits only `api.github.com` and `raw.githubusercontent.com` on CONNECT 443,
 with the existing private-destination denial. Hermes cannot directly use
 `api.github.com` through its own Squid policy. The trusted broker does not run
 agent scripts. Its internal HTTP endpoint accepts the `github-broker:8000`
-hostname; possession of that endpoint grants only its six bounded operations.
+hostname; possession of that endpoint grants only its thirteen bounded operations.
 Hermes' writable local MCP settings do not grant access to additional host mounts.
 
 ## Required review without bypass
@@ -135,7 +248,7 @@ configuration check with confirmed owner selection on an individual PR.
 
 The App has Contents and Pull requests read/write, Issues read/write, and
 Metadata read; Administration, Actions and Workflows are absent. Issues write
-is unused. Keep the installation restricted to this repository.
+is used only for the bounded issue tools. Keep the installation restricted to this repository.
 [GitHub's merge API requires Contents write](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request),
 so this chosen design guarantees required review rather than removal of the
 App's underlying post-approval merge permission. The broker has no merge,

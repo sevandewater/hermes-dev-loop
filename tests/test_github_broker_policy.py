@@ -19,6 +19,27 @@ class BrokerPolicyTests(unittest.TestCase):
                     'current_user_can_bypass': 'never'}
         return read
 
+    def test_issue_argument_bounds_reject_wrong_types_and_unsupported_content(self):
+        self.assertEqual(policy.issue_number(3), 3)
+        for value in (True, 0, -1, 2**31, '3', 3.0):
+            with self.subTest(value=value), self.assertRaises(policy.PolicyError):
+                policy.issue_number(value)
+        for value in (None, 42, ' ', 'a' * 201, '<b>title</b>', '```title', 'a\u200bb', 'a\nB'):
+            with self.subTest(value=value), self.assertRaises(policy.PolicyError):
+                policy.issue_text(value, title=True)
+        self.assertEqual(policy.issue_text('Valid title', title=True), 'Valid title')
+        self.assertEqual(policy.issue_text('Markdown\n<b>body</b>'), 'Markdown\n<b>body</b>')
+        for value in (None, 4, 'a' * 20001, 'x\x00', 'x\u200b', 'x\r\n'):
+            with self.subTest(value=value), self.assertRaises(policy.PolicyError):
+                policy.issue_text(value)
+        for value in ('bad-id', '12345678-1234-1234-1234-123456789ABC', None):
+            with self.assertRaises(policy.PolicyError):
+                policy.issue_request_id(value)
+        for value in ('bug', ['bug', 'bug'], [' '], ['x' * 51], [None], ['x\n'], list(map(str, range(21)))):
+            with self.assertRaises(policy.PolicyError):
+                policy.issue_labels(value)
+        self.assertEqual(policy.issue_labels(['bug']), ['bug'])
+
     def test_active_review_rule_with_no_bypass_enables_proposals(self):
         protection = policy.review_protection(self.fetch())
         self.assertEqual(protection['required_approvals'], 1)
