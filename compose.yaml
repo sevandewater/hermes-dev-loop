@@ -153,6 +153,8 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=134217728,uid=1000,gid=1000,mode=1777
     environment:
       HOME: /tmp
+      # Empty denies all log-storage downloads until exact-host owner approval.
+      BROKER_LOG_HOSTS: ${BROKER_LOG_HOSTS:-}
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128

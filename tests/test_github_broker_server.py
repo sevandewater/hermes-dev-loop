@@ -26,7 +26,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         expected = {'broker_status', 'read_project_file', 'read_pull_request', 'create_proposal_branch',
                     'commit_proposal_files', 'open_proposal_pull_request', 'list_project_issues',
                     'read_project_issue', 'list_project_labels', 'create_project_issue',
-                    'update_project_issue', 'change_project_issue_labels', 'comment_on_project_issue'}
+                    'update_project_issue', 'change_project_issue_labels', 'comment_on_project_issue',
+                    'list_project_action_runs', 'read_project_action_run', 'list_project_action_jobs',
+                    'read_project_job_logs', 'read_main_check_requirements'}
         self.assertEqual(set(tools), expected)
         self.assertEqual(tools['read_project_issue'].input_schema['properties']['number']['type'], 'integer')
         for name in expected - {'broker_status'}:
@@ -34,7 +36,8 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('repo', tools[name].input_schema['properties'])
         self.assertEqual(set(self.module.UPSTREAM_TOOLS), {'get_file_contents', 'pull_request_read',
                          'create_branch', 'push_files', 'create_pull_request', 'repository_ruleset_read',
-                         'list_issues', 'issue_read', 'issue_write', 'list_label', 'add_issue_comment'})
+                         'list_issues', 'issue_read', 'issue_write', 'list_label', 'add_issue_comment',
+                         'actions_list', 'actions_get', 'get_job_logs'})
 
     async def test_sdk_dispatch_rejects_non_integer_issue_numbers_before_backend(self):
         from mcp.types import CallToolRequestParams, CallToolResult
@@ -165,6 +168,51 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                     await action()
         self.assertEqual(denied.await_count, 3)
         backend.assert_not_awaited()
+
+    async def test_actions_sdk_rejects_coercions_before_upstream(self):
+        from mcp.types import CallToolRequestParams
+        from unittest.mock import AsyncMock, patch
+        for name, args, field in (
+            ('read_project_action_run', {}, 'run_id'),
+            ('list_project_action_jobs', {'run_id': 10}, 'attempt'),
+            ('read_project_job_logs', {'run_id': 10, 'job_id': 20, 'attempt': 1}, 'job_id'),
+            ('list_project_action_runs', {'sha': 'a' * 40}, 'page'),
+        ):
+            for value in (True, '7', 7.0, 0, -1):
+                backend = AsyncMock()
+                with patch.object(self.module, 'backend', backend):
+                    result = await self.module.server._handle_call_tool(SimpleNamespace(),
+                        CallToolRequestParams(name=name, arguments={**args, field: value}))
+                    self.assertTrue(result.is_error)
+                    backend.assert_not_awaited()
+
+    async def test_actions_dispatch_pins_repo_and_keeps_error_cause_ambiguous(self):
+        from mcp.types import CallToolRequestParams, CallToolResult
+        import json
+        from unittest.mock import patch
+        calls = []
+        async def call(name, args):
+            calls.append((name, args))
+            return CallToolResult(content=[], structured_content={
+                'id': 10, 'head_sha': 'a' * 40, 'run_attempt': 2, 'workflow_id': 5,
+                'status': 'queued', 'conclusion': None})
+        context = SimpleNamespace(lifespan_context=SimpleNamespace(call_tool=call))
+        out = await self.module.server._handle_call_tool(context, CallToolRequestParams(
+            name='read_project_action_run', arguments={'run_id': 10, 'owner': 'evil',
+                'repo': 'evil', 'method': 'download_workflow_run_artifact', 'url': 'https://evil'}))
+        self.assertFalse(out.is_error)
+        self.assertEqual(json.loads(out.content[0].text)['status'], 'queued')
+        self.assertEqual(calls, [('actions_get', {'owner': 'sevandewater', 'repo': 'hermes-dev-loop',
+                                                'method': 'get_workflow_run', 'resource_id': '10'})])
+        async def failed(name, args):
+            raise RuntimeError('https://logs.example/?sig=secret 404 token=secret')
+        with patch.object(context.lifespan_context, 'call_tool', failed):
+            out = await self.module.server._handle_call_tool(context, CallToolRequestParams(
+                name='read_project_action_run', arguments={'run_id': 10}))
+        self.assertTrue(out.is_error)
+        self.assertIn('unverified', out.content[0].text)
+        self.assertNotIn('sig=', out.content[0].text)
+        self.assertNotIn('secret', out.content[0].text)
 
     async def test_backend_pins_repository_and_sanitizes_errors(self):
         calls = []

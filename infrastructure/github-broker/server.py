@@ -12,15 +12,19 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
 from issue_management import Issues
+from actions import Actions
+from job_logs import Downloader
 
 from policy import APP_ID, BASE, OWNER, REPO, PREFIX, PolicyError, review_protection, pull_request_rules, proposal_branch, source_path, validate_files
 
 UPSTREAM_TOOLS = ('get_file_contents', 'pull_request_read', 'create_branch', 'push_files', 'create_pull_request',
-                  'repository_ruleset_read', 'list_issues', 'issue_read', 'issue_write', 'list_label', 'add_issue_comment')
+                  'repository_ruleset_read', 'list_issues', 'issue_read', 'issue_write', 'list_label', 'add_issue_comment',
+                  'actions_list', 'actions_get', 'get_job_logs')
 
 
 @asynccontextmanager
@@ -195,6 +199,66 @@ async def comment_on_project_issue(number: IssueNumber, body: str, request_id: s
     """Add/read back an issue comment. Reuse the same lowercase UUID and payload when reconciling any failure."""
     async with issue_mutation_lock:
         return await issues(ctx).comment(number, body, request_id)
+
+
+ActionID = Annotated[int, Field(strict=True, ge=1, le=9_007_199_254_740_991)]
+ActionPage = Annotated[int, Field(strict=True, ge=1, le=100)]
+ActionAttempt = Annotated[int, Field(strict=True, ge=1, le=1_000_000)]
+LogLine = Annotated[int, Field(strict=True, ge=1, le=100_000)]
+LogCount = Annotated[int, Field(strict=True, ge=1, le=500)]
+StrictBool = Annotated[bool, Field(strict=True)]
+
+
+async def action_result(operation):
+    try:
+        return await operation
+    except PolicyError as error:
+        # Expected denials must remain useful MCP tool errors, not SDK crashes
+        # with traceback logging. Adapter messages never contain upstream data.
+        raise ToolError(str(error)) from None
+
+
+def actions(ctx):
+    async def call(name, args):
+        try:
+            return await backend(ctx, name, args)
+        except PolicyError:
+            raise PolicyError('Actions/rules evidence unavailable; permission/not-found/upstream cause unverified.') from None
+    return Actions(call)
+
+
+@server.tool()
+async def list_project_action_runs(ctx: Context, sha: str | None = None, pr: IssueNumber | None = None,
+                                   page: ActionPage = 1, per_page: ActionPage = 30) -> dict:
+    """Scan one bounded project Actions page by exact full SHA or PR. Follow next_page even if no matches."""
+    return await action_result(actions(ctx).runs(sha, pr, page, per_page))
+
+
+@server.tool()
+async def read_project_action_run(run_id: ActionID, ctx: Context) -> dict:
+    """Read latest project Actions run metadata. Not a historical attempt summary or merge verdict."""
+    return await action_result(actions(ctx).run(run_id))
+
+
+@server.tool()
+async def list_project_action_jobs(run_id: ActionID, ctx: Context, attempt: ActionAttempt | None = None,
+                                  page: ActionPage = 1, per_page: ActionPage = 30) -> dict:
+    """Read one page of project jobs/steps, optionally filtering actual attempt. Includes rerun race observations."""
+    return await action_result(actions(ctx).jobs(run_id, attempt, page, per_page))
+
+
+@server.tool()
+async def read_project_job_logs(run_id: ActionID, job_id: ActionID, attempt: ActionAttempt, ctx: Context,
+                                start_line: LogLine = 1, lines: LogCount = 100, tail: StrictBool = False) -> dict:
+    """Read bounded untrusted single-job diagnostics after association checks. No signed URL is exposed."""
+    downloader = Downloader(hosts=tuple(filter(None, os.environ.get('BROKER_LOG_HOSTS', '').split(','))))
+    return await action_result(actions(ctx).logs(run_id, job_id, attempt, downloader, start_line, lines, tail))
+
+
+@server.tool()
+async def read_main_check_requirements(ctx: Context, page: ActionPage = 1, per_page: ActionPage = 30) -> dict:
+    """Read active main ruleset check requirements, not results. Classic protection remains unavailable."""
+    return await action_result(actions(ctx).requirements(page, per_page))
 
 
 @server.custom_route('/health', methods=['GET'])

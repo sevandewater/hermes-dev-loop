@@ -3,3 +3,5 @@
 !server.py
 !policy.py
 !issue_management.py
+!actions.py
+!job_logs.py

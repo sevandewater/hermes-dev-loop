@@ -59,7 +59,8 @@ Its fixed upstream allowlist is exactly `get_file_contents`, `pull_request_read`
 `list_issues`, `issue_read`, `issue_write`, `list_label`, `add_issue_comment`;
 startup verifies the actual tool set. The ruleset read tool is used internally
 for authenticated policy checks and is not exposed to Hermes. Agent-controlled arguments cannot choose the owner, repository,
-credential, upstream command or API URL. Thirteen tools are exposed to Hermes:
+credential, upstream command or API URL. The proposal and issue-management tools exposed to Hermes are listed below;
+[Actions diagnostics](actions-diagnostics.md) documents the additional read-only tools:
 
 | Tool | Boundary |
 | --- | --- |
@@ -203,7 +204,8 @@ permits only `api.github.com` and `raw.githubusercontent.com` on CONNECT 443,
 with the existing private-destination denial. Hermes cannot directly use
 `api.github.com` through its own Squid policy. The trusted broker does not run
 agent scripts. Its internal HTTP endpoint accepts the `github-broker:8000`
-hostname; possession of that endpoint grants only its thirteen bounded operations.
+hostname; possession of that endpoint grants only its explicitly allowlisted,
+project-scoped operations.
 Hermes' writable local MCP settings do not grant access to additional host mounts.
 
 ## Required review without bypass
@@ -247,8 +249,12 @@ code-owner setting, not deployment of the ownership file. Do not confuse that
 configuration check with confirmed owner selection on an individual PR.
 
 The App has Contents and Pull requests read/write, Issues read/write, and
-Metadata read; Administration, Actions and Workflows are absent. Issues write
-is used only for the bounded issue tools. Keep the installation restricted to this repository.
+Metadata read. Actions diagnostics additionally need Actions **read**, not write.
+Installation access is not established by configured grants; verify it after
+approved activation. Administration and Workflows write are not requested.
+Issues write is used only for bounded issue tools. Keep the installation restricted
+to this repository. See [Actions diagnostics and activation](actions-diagnostics.md)
+for the new tools, limits, exact-host default-deny storage policy and pending live checks.
 [GitHub's merge API requires Contents write](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request),
 so this chosen design guarantees required review rather than removal of the
 App's underlying post-approval merge permission. The broker has no merge,

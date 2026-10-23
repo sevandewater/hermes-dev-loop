@@ -13,7 +13,9 @@ import uuid
 EXPECTED_TOOLS = {'broker_status', 'read_project_file', 'read_pull_request', 'create_proposal_branch',
                   'commit_proposal_files', 'open_proposal_pull_request', 'list_project_issues',
                   'read_project_issue', 'list_project_labels', 'create_project_issue', 'update_project_issue',
-                  'change_project_issue_labels', 'comment_on_project_issue'}
+                  'change_project_issue_labels', 'comment_on_project_issue', 'list_project_action_runs',
+                  'read_project_action_run', 'list_project_action_jobs', 'read_project_job_logs',
+                  'read_main_check_requirements'}
 
 
 def result_data(result):
@@ -39,7 +41,7 @@ async def inside(proposal, issue_canary=None):
             await session.initialize()
             tools = {tool.name for tool in (await session.list_tools()).tools}
             assert tools == EXPECTED_TOOLS, 'MCP tool allowlist mismatch'
-            results.append('PASS: exact proposal/issue MCP tool surface; no merge or generic execution tool')
+            results.append('PASS: exact proposal/issue/Actions MCP tool surface; no merge or generic execution tool')
             read = await session.call_tool('read_project_file', {'path': 'LICENSE'})
             assert not read.is_error and 'MIT License' in read.model_dump_json(), 'Authenticated project read failed'
             results.append('PASS: Hermes -> internal MCP broker -> official GitHub MCP -> real repository read')
