@@ -52,8 +52,8 @@ otherwise a proposal may unintentionally include the entire unmerged foundation.
 
 The separate identity is `hermes-dev-loop-bot`, installed only for this project.
 The [isolated broker](github-app-broker.md) holds its App key and delegates
-authentication to GitHub's maintained MCP server. Hermes receives six restricted
-MCP tools through `github-devloop`, with no key, installation token, merge tool,
+authentication to GitHub's maintained MCP server. Hermes receives a restricted,
+project-scoped MCP toolset through `github-devloop`, with no key, installation token, merge tool,
 approval tool, generic API or host execution access.
 
 Start/register the broker using the **github** submenu in `./devloop`, then start

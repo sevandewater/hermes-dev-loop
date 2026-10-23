@@ -1,7 +1,7 @@
 # Read-only Actions diagnostics
 
 This source proposal retains official GitHub MCP **v2.0.2** and its credential
-handling. It adds five fixed-project broker tools (18 total public tools):
+handling. It exposes the following fixed-project diagnostic tools:
 
 | Tool | Inputs / evidence |
 | --- | --- |

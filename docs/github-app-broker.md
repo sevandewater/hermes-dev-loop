@@ -59,7 +59,8 @@ Its fixed upstream allowlist is exactly `get_file_contents`, `pull_request_read`
 `list_issues`, `issue_read`, `issue_write`, `list_label`, `add_issue_comment`;
 startup verifies the actual tool set. The ruleset read tool is used internally
 for authenticated policy checks and is not exposed to Hermes. Agent-controlled arguments cannot choose the owner, repository,
-credential, upstream command or API URL. Thirteen tools are exposed to Hermes:
+credential, upstream command or API URL. The proposal and issue-management tools exposed to Hermes are listed below;
+[Actions diagnostics](actions-diagnostics.md) documents the additional read-only tools:
 
 | Tool | Boundary |
 | --- | --- |
@@ -203,7 +204,8 @@ permits only `api.github.com` and `raw.githubusercontent.com` on CONNECT 443,
 with the existing private-destination denial. Hermes cannot directly use
 `api.github.com` through its own Squid policy. The trusted broker does not run
 agent scripts. Its internal HTTP endpoint accepts the `github-broker:8000`
-hostname; possession of that endpoint grants only its eighteen bounded operations.
+hostname; possession of that endpoint grants only its explicitly allowlisted,
+project-scoped operations.
 Hermes' writable local MCP settings do not grant access to additional host mounts.
 
 ## Required review without bypass

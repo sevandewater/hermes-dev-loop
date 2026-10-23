@@ -105,7 +105,7 @@ After `./devloop github --start`, run:
 ```
 
 The first runs the MCP client inside Hermes and verifies actual App-authenticated
-file/PR/issue reads, the exact eighteen-tool surface, unavailable merge tool, and rejected
+file/PR/issue reads, the exact declared tool surface, unavailable merge tool, and rejected
 main/workflow/key-path operations. It sends no GitHub mutation. The second adds
 a disposable branch/commit/draft-PR canary, explicitly gated on active required PR/code-owner
 review with stale-approval dismissal and no bypass actors. It exits 2 when protection blocks creation; no real merge is
