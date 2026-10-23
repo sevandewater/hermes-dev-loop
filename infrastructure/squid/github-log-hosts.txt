@@ -1,0 +1,3 @@
+# Default deny: no approved Actions log-storage hosts.
+# Owner activation only: add exact lowercase hostnames, never leading dots,
+# wildcards, URLs or queries. Mirror in broker-only BROKER_LOG_HOSTS.

@@ -84,6 +84,14 @@ tests. Subsequent [foundation validation](../docs/security-validation.md) and
 
 ## GitHub broker checks
 
+Actions adapters and downloader fixtures require the pinned Hermes environment
+(including httpx and MCP SDK); use `/opt/hermes/.venv/bin/python -W
+error::ResourceWarning -m unittest discover -s tests -p 'test_*.py' -q` for the
+full gate. After approved host activation, `tests/check_project_actions.py`
+performs read-only run/job/rules/log qualification without printing raw logs.
+See [Actions diagnostics](../docs/actions-diagnostics.md) for exact arguments,
+default-deny storage host configuration and explicitly pending live checks.
+
 The local unit suite also covers RSA import/storage, public App-ID correction
 without key rotation, proposal branch/path/content policy, required-review/no-bypass ruleset policy,
 and CLI broker activation/lifecycle. Disposable keys remain in temporary test
@@ -97,7 +105,7 @@ After `./devloop github --start`, run:
 ```
 
 The first runs the MCP client inside Hermes and verifies actual App-authenticated
-file/PR reads, the exact six-tool surface, unavailable merge tool, and rejected
+file/PR/issue reads, the exact eighteen-tool surface, unavailable merge tool, and rejected
 main/workflow/key-path operations. It sends no GitHub mutation. The second adds
 a disposable branch/commit/draft-PR canary, explicitly gated on active required PR/code-owner
 review with stale-approval dismissal and no bypass actors. It exits 2 when protection blocks creation; no real merge is

@@ -140,7 +140,7 @@ Docker/Compose boundary tests still require a human host administrator.
 
 The dedicated GitHub App `hermes-dev-loop-bot` supplies the separate proposal
 identity. Its optional broker uses GitHub's official MCP server for App
-authentication and token refresh. Hermes receives thirteen project-scoped MCP tools (proposals and issue management);
+authentication and token refresh. Hermes receives eighteen project-scoped MCP tools (proposals, issue management and [read-only Actions diagnostics](docs/actions-diagnostics.md));
 it receives neither the private key nor installation tokens. Reads work before
 writes are enabled. Every proposal write checks GitHub's effective rules for an
 active PR requirement on `main`: at least one approval, code-owner review, stale
