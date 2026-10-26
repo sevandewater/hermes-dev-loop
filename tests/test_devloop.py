@@ -580,7 +580,7 @@ class DevLoopTests(unittest.TestCase):
             self.app.network_check()
 
     def test_log_filter_masks_common_credentials_and_terminal_escapes(self):
-        text = '\x1b[31mAuthorization: Bearer ***"refresh_token":"another-secret"}\naccess_token=value\n'
+        text = '\x1b[31mAuthorization: Bearer very-secret\n{"refresh_token":"another-secret"}\naccess_token=value\n'
         output = devloop.redact(text)
         self.assertNotIn("very-secret", output)
         self.assertNotIn("another-secret", output)
