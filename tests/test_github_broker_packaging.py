@@ -29,7 +29,8 @@ class PackagingTests(unittest.TestCase):
     def test_adapter_is_packaged_with_private_persistent_broker_only_state(self):
         dockerfile = (ROOT / 'infrastructure/github-broker/Dockerfile').read_text()
         compose = (ROOT / 'compose.yaml').read_text()
-        self.assertIn('COPY server.py policy.py issue_management.py actions.py job_logs.py /opt/github-broker/', dockerfile)
+        self.assertIn('workflow_policy.py workflow_proposals.py /opt/github-broker/', dockerfile)
+        self.assertIn('BROKER_WORKFLOW_PUBLICATION: ${BROKER_WORKFLOW_PUBLICATION:-}', compose)
         self.assertIn('BROKER_LOG_HOSTS:', compose)
         self.assertIn('${BROKER_LOG_HOSTS:-}', compose)
         squid = (ROOT / 'infrastructure/squid/squid.conf').read_text()
