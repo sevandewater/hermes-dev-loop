@@ -141,11 +141,11 @@ def redact(line):
 
 
 class Runner:
-    def run(self, args, *, capture=True, data=None, timeout=30, label="Command", interactive=False, failure_messages=None):
+    def run(self, args, *, capture=True, data=None, timeout=30, label="Command", interactive=False, failure_messages=None, env=None):
         try:
             if interactive:
                 # Leave Ctrl-C with Docker/the interactive application while it owns the terminal.
-                child = subprocess.Popen(args)
+                child = subprocess.Popen(args, env=env)
                 previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
                 try:
                     code = child.wait()
@@ -154,7 +154,7 @@ class Runner:
                 if code:
                     raise Error(f"{label} exited with status {code}.")
                 return ""
-            result = subprocess.run(args, input=data, text=True, capture_output=capture, timeout=timeout)
+            result = subprocess.run(args, input=data, text=True, capture_output=capture, timeout=timeout, env=env)
         except FileNotFoundError:
             raise Error(f"{args[0]} is not installed or not on PATH.") from None
         except subprocess.TimeoutExpired:
@@ -213,7 +213,9 @@ class DevLoop:
         self._config = None
 
     def dc(self, *args, **kwargs):
-        return self.runner.run(self.compose + list(args), label="Docker Compose", **kwargs)
+        environment = dict(os.environ)
+        environment['BROKER_WORKFLOW_PUBLICATION'] = 'verified' if self.host_settings().get('workflow_publication', False) else ''
+        return self.runner.run(self.compose + list(args), label="Docker Compose", env=environment, **kwargs)
 
     def config(self):
         if self._config is None:
@@ -251,24 +253,33 @@ class DevLoop:
         finally:
             os.close(descriptor)
 
-    def selected_model(self):
+    def host_settings(self):
         for path in (self.root / "runtime", self.control, self.settings):
             if path.is_symlink():
                 raise Error(f"Refusing symlink: {path}")
         if not self.settings.exists():
-            return None
-        settings = decoded(self.settings.read_text(), "Model settings")
+            return {}
+        settings = decoded(self.settings.read_text(), "Host settings")
         if not isinstance(settings, dict):
-            raise Error("Model settings must contain a JSON object.")
+            raise Error("Host settings must contain a JSON object.")
+        if 'workflow_publication' in settings and type(settings['workflow_publication']) is not bool:
+            raise Error("Host workflow_publication setting must be a boolean.")
+        return settings
+
+    def selected_model(self):
+        settings = self.host_settings()
         return model_id(settings["model"]) if settings.get("model") else None
 
     def save_model(self, value):
         value = model_id(value)
+        self.save_settings({'model': value})
+        print(f"Default model saved: {value}")
+
+    def save_settings(self, updates):
         self.private_control()
         # Preserve unknown settings, and refuse to replace unreadable existing configuration.
-        self.selected_model()
-        settings = decoded(self.settings.read_text(), "Model settings") if self.settings.exists() else {}
-        settings.update({"version": 1, "model": value})
+        settings = self.host_settings()
+        settings.update({'version': 1, **updates})
         temporary = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", dir=self.control, delete=False) as handle:
@@ -281,7 +292,7 @@ class DevLoop:
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
-        print(f"Default model saved: {value}")
+        self._config = None
 
     def services(self):
         output = self.dc("ps", "--all", "--format", "json")
@@ -454,14 +465,50 @@ class DevLoop:
                 self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-", info["revision"],
                         data=PROJECT_CHECKOUT, capture=False, timeout=120)
 
-    def github(self, setup=False, start=False, check=False, proposal_test=False):
+    def workflow_publication(self, action):
+        if action != 'status':
+            with self.administration():
+                self.save_settings({'workflow_publication': action == 'enable'})
+                try:
+                    self.require_running('github-broker')
+                    self.dc('--profile', 'github', 'up', '-d', '--no-deps', '--force-recreate', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
+                    live = self.live_workflow_publication()
+                    if live != ('enabled' if action == 'enable' else 'disabled'):
+                        raise Error('Running broker setting does not match the configured setting.')
+                except Error as error:
+                    raise Error(f'Workflow setting saved, but live application was not verified: {error} Run ./devloop github --workflows status; retry the command after recovery.') from None
+        if action == 'status':
+            live = self.live_workflow_publication()
+        configured = 'enabled' if self.host_settings().get('workflow_publication', False) else 'disabled'
+        print(f'Workflow publication configured: {configured}')
+        print(f'Workflow publication live: {live}')
+
+    def live_workflow_publication(self):
+        try:
+            self.require_running('github-broker')
+            # Read only this setting, never the broker credential environment.
+            value = self.dc('exec', '-T', 'github-broker', '/usr/local/bin/python3', '-I', '-c',
+                            "import os; print('enabled' if os.environ.get('BROKER_WORKFLOW_PUBLICATION') == 'verified' else 'disabled')")
+            return value if value in ('enabled', 'disabled') else 'unavailable'
+        except Error:
+            return 'unavailable'
+
+    def github(self, setup=False, start=False, check=False, proposal_test=False, workflows=None):
+        if workflows is not None:
+            return self.workflow_publication(workflows)
         store = AppSettings()
         try:
             if not any((setup, start, check, proposal_test)) and terminal():
-                print("1. Show GitHub App setup status\n2. Configure App IDs and import a downloaded PEM\n3. Start broker and register Hermes MCP\n4. Check real MCP reads and denied operations\n5. Test draft PR creation (creates a canary only when protection passes)")
+                print("1. Show GitHub App setup status\n2. Configure App IDs and import a downloaded PEM\n3. Start broker and register Hermes MCP\n4. Check real MCP reads and denied operations\n5. Test draft PR creation (creates a canary only when protection passes)\n6. Workflow publication (host setting only)")
                 choice = input("GitHub action [1]: ").strip() or "1"
-                if choice not in ("1", "2", "3", "4", "5"):
+                if choice not in ("1", "2", "3", "4", "5", "6"):
                     raise Error("Choose one of the listed GitHub actions.")
+                if choice == '6':
+                    print('1. Enable for authorized workflow-file changes\n2. Disable workflow publication\n3. Show configured and live status')
+                    choice = input('Workflow action [3]: ').strip() or '3'
+                    if choice not in ('1', '2', '3'):
+                        raise Error('Choose one of the listed workflow actions.')
+                    return self.workflow_publication({'1': 'enable', '2': 'disable', '3': 'status'}[choice])
                 setup = choice == "2"
                 start, check, proposal_test = choice == "3", choice == "4", choice == "5"
             if setup:
@@ -740,6 +787,7 @@ def parser():
             action.add_argument("--checkout", action="store_true", help="Fetch the reference commit into a new writable /workspace checkout; preserves existing work")
         elif name == "github":
             group = action.add_mutually_exclusive_group()
+            group.add_argument("--workflows", choices=('enable', 'disable', 'status'), help="Host-only workflow publication control; no remote GitHub changes")
             group.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
             group.add_argument("--start", action="store_true", help="Build/start the isolated broker and register its MCP endpoint in Hermes")
             group.add_argument("--check", action="store_true", help="Test real MCP reads and denial paths without creating a proposal")
