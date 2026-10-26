@@ -33,7 +33,8 @@ Every menu action is also available as a command:
 | `help` | Show commands and examples |
 
 The host tool uses only Python's standard library. The selected model lives in
-private `runtime/devloop/settings.json`, outside Hermes' mounts, and contains no
+private `runtime/devloop/settings.json`, alongside the workflow-publication switch,
+outside Hermes' mounts, and contains no
 credentials. Administration actions share a host-side lock; status and logs
 remain available. Existing `.env`, workspace, gateway state and unknown model
 settings are preserved. Setup creates `.env` from the example only if absent.
@@ -102,7 +103,7 @@ listens only on its inference-network address. No host ports are published.
 | `runtime/hermes/skills/` | Hermes skills at `/home/hermes/.hermes/skills` |
 | `runtime/hermes/tools/` | Executable development tools at `/home/hermes/tools` |
 | `runtime/gateway/` | Gateway and human only; mounted at `/var/lib/gateway` in the gateway |
-| `runtime/devloop/` | Human-managed model preference and administration lock; never mounted into a service |
+| `runtime/devloop/` | Human-managed model preference, workflow-publication setting and administration lock; never mounted into a service |
 | `runtime/reference/` | Human-exported committed project source, mounted read-only at `/reference`; excludes host Git metadata, local environment and runtime state |
 | `infrastructure/squid/` | Human-owned policy, mounted read-only into Squid |
 | `~/.config/hermes-dev-loop/github-app.pem` and `github-app.json` | Owner-only host files, mounted read-only only into the optional GitHub broker |
@@ -172,7 +173,27 @@ Direct equivalents are:
 ./devloop github --proposal-test  # creates a disposable draft PR only if protection passes
 ```
 
-Once enabled, normal `start`, `stop` and `rebuild` include the broker. It has no
+Workflow publication is a separate, normally disabled host control:
+
+```bash
+./devloop github --workflows status
+./devloop github --workflows enable  # only for authorized workflow-file changes
+./devloop github --workflows disable # restore the normal state afterward
+```
+
+The github submenu offers the same controls. Before first enable, complete the
+[one-time premerge security prerequisites](docs/ci-verification.md), then merge,
+pull on the host and run `./devloop github --start` to rebuild the reviewed broker.
+The command does not verify GitHub administrative settings. It preserves host
+settings, applies by recreating only the broker, and verifies its actual running
+setting; no manual restart or remote GitHub mutation is needed. Status separates
+configured from live/unavailable state. Application failure returns nonzero while
+retaining the desired setting; inspect status and retry after recovery. All DevLoop
+lifecycle commands honor that setting; do not toggle it by editing `.env` or raw
+Compose. Existing CI and ordinary code publication continue while disabled. Enable
+permits only the existing finite verification envelope, never arbitrary workflows.
+
+Once the broker is enabled, normal `start`, `stop` and `rebuild` include it. It has no
 default route, host port or workspace mount. Its Squid policy permits only
 `api.github.com` and `raw.githubusercontent.com`; Hermes cannot directly reach
 GitHub's API. Clients use `squid`, `llm-gateway-api` and `github-broker` DNS names.
