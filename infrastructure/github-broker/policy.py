@@ -110,7 +110,7 @@ def review_protection(fetch):
     raise PolicyError('main needs active PR/code-owner review with stale-approval dismissal and no App bypass; writes remain blocked.')
 
 
-def validate_files(files):
+def validate_files(files, *, workflow_proposal=False):
     if not isinstance(files, list) or not 1 <= len(files) <= 50:
         raise PolicyError('Submit between 1 and 50 text files per commit.')
     total = 0
@@ -118,7 +118,14 @@ def validate_files(files):
     for item in files:
         if not isinstance(item, dict) or set(item) != {'path', 'content'}:
             raise PolicyError('Each file needs only path and content.')
-        path = source_path(item['path'], writing=True)
+        path = source_path(item['path'])
+        if path in ('.github', '.github/workflows'):
+            raise PolicyError('Cannot replace workflow ancestor directories with files.')
+        if path.startswith('.github/workflows/') and workflow_proposal:
+            from workflow_policy import validate_workflow
+            validate_workflow(path, item['content'])
+        else:
+            source_path(path, writing=True)
         if path in paths or not isinstance(item['content'], str):
             raise PolicyError('File paths must be unique and content must be text.')
         if re.search(r'(?m)^-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----', item['content']):
