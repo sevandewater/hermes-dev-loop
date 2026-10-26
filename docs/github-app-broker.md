@@ -16,6 +16,9 @@ canary. Equivalent commands:
 ./devloop github --start
 ./devloop github --check
 ./devloop github --proposal-test
+./devloop github --workflows status
+./devloop github --workflows enable  # only for authorized workflow-file proposals
+./devloop github --workflows disable # return to the normal state
 ```
 
 Setup asks for the App ID, installation ID or installation URL, and the path to
@@ -41,6 +44,18 @@ configuration writer. A new Hermes chat discovers the tools. Existing MCP
 entries are preserved; a conflicting `github-devloop` URL is refused. Subsequent
 DevLoop start/stop/rebuild actions include the enabled broker. No agent session
 starts automatically.
+
+Workflow publication has a separate **Workflow publication** submenu. It defaults
+to disabled, persists in host-only `runtime/devloop/settings.json`, and is honored
+by DevLoop start/rebuild. Enable/disable recreate only the running broker (no
+manual restart or dependency restart) and verify its actual environment. Status
+shows configured/live state separately, including `unavailable`; failed apply
+retains the desired setting and returns nonzero. No GitHub settings are changed
+or certified. Complete the [one-time premerge prerequisites](ci-verification.md)
+before first enable; after merge, host pull and `./devloop github --start` activate
+the reviewed code. Normally disable again after authorized workflow-file changes.
+Existing CI and ordinary code publication do not require enable. Do not edit
+`.env` or use raw Compose to manage this host JSON setting.
 
 ## Maintained authentication, narrow operations
 
@@ -79,9 +94,13 @@ credential, upstream command or API URL. The proposal and issue-management tools
 | `comment_on_project_issue` | Issue-only comment with durable request UUID and exact readback |
 
 All three proposal write tools recheck GitHub protection before their operation. Protected
-paths, key files, traversal and workflow writes are rejected. PEM private-key
-content is rejected from commits. There is no merge, approval, auto-merge,
-branch-delete, workflow, administrative, generic API or command-execution tool.
+paths, key files and traversal are rejected. Workflow writes are disabled by
+default; after owner security verification and host activation, the existing
+commit tool accepts only the finite verification envelope and validates the
+complete proposed workflow set. See [CI verification and activation gates](ci-verification.md).
+PEM private-key content is rejected from commits. There is no merge, approval,
+auto-merge, branch-delete, workflow dispatch/rerun, administrative, generic API
+or command-execution tool.
 Backend errors are sanitized; upstream stderr is not forwarded to agent logs.
 
 ## Issue management and replay safety

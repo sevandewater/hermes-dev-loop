@@ -126,13 +126,19 @@ async def create_proposal_branch(branch: str, ctx: Context):
 
 @server.tool()
 async def commit_proposal_files(branch: str, files: list[dict], message: str, ctx: Context):
-    """Commit up to 50 text files on a hermes/ branch; cannot update main or workflows."""
-    proposal_branch(branch)
-    validate_files(files)
-    if not message.strip() or len(message) > 2000:
-        raise PolicyError('Provide a nonempty commit message under 2000 characters.')
-    await current_review_protection(ctx)
-    return await backend(ctx, 'push_files', {'branch': branch, 'files': files, 'message': message})
+    """Commit proposal text files; workflows require the finite envelope and owner activation."""
+    from workflow_proposals import validate_proposal
+    try:
+        proposal_branch(branch)
+        validate_files(files, workflow_proposal=True)
+        if not message.strip() or len(message) > 2000:
+            raise PolicyError('Provide a nonempty commit message under 2000 characters.')
+        await current_review_protection(ctx)
+        async with proposal_mutation_lock:
+            await validate_proposal(lambda name, args: backend(ctx, name, args), branch, files)
+            return await backend(ctx, 'push_files', {'branch': branch, 'files': files, 'message': message})
+    except PolicyError as error:
+        raise ToolError(str(error)) from None
 
 
 @server.tool()
@@ -146,6 +152,7 @@ async def open_proposal_pull_request(branch: str, title: str, body: str, ctx: Co
         'draft': True, 'maintainer_can_modify': True})
 
 
+proposal_mutation_lock = asyncio.Lock()
 issue_mutation_lock = asyncio.Lock()
 # Reject coercible identifiers before the SDK can turn them into a different target.
 IssueNumber = Annotated[int, Field(strict=True, ge=1, le=2_147_483_647)]

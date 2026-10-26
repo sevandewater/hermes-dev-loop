@@ -155,6 +155,8 @@ services:
       HOME: /tmp
       # Empty denies all log-storage downloads until exact-host owner approval.
       BROKER_LOG_HOSTS: ${BROKER_LOG_HOSTS:-}
+      # Owner sets only after completing docs/ci-verification.md security gates.
+      BROKER_WORKFLOW_PUBLICATION: ${BROKER_WORKFLOW_PUBLICATION:-}
       HTTP_PROXY: http://squid:3128
       HTTPS_PROXY: http://squid:3128
       http_proxy: http://squid:3128

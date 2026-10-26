@@ -1,9 +1,30 @@
 # DevLoop checks and Subscription Proxy diagnostic
 
-The human administration CLI has standard-library regression tests:
+## Shared verification gate
+
+On a disposable Linux amd64 Docker host, run the same full command locally and in CI:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3 scripts/verify.py
+```
+
+It builds all four shipped images through the real Compose configuration (including
+broker `additional_contexts`), then runs full unit discovery in the freshly built
+development image's pinned SDK environment. Every skip fails; the PR #5 packaging
+regression remains included. See [CI verification](../docs/ci-verification.md) for
+prerequisites, exact boundaries and human activation gates. The agent environment
+has no Docker: fixture orchestration tests and local unit results are not evidence
+of actual image builds or native-host isolation.
+
+For unit-only development in an existing pinned environment (not the full gate):
+
+```bash
+/opt/hermes/.venv/bin/python -W error::ResourceWarning scripts/verify.py --units-only
+```
+
+The separate gateway integration check requires the built gateway image:
+
+```bash
 python3 tests/check_gateway_logout.py
 ```
 
@@ -85,9 +106,9 @@ tests. Subsequent [foundation validation](../docs/security-validation.md) and
 ## GitHub broker checks
 
 Actions adapters and downloader fixtures require the pinned Hermes environment
-(including httpx and MCP SDK); use `/opt/hermes/.venv/bin/python -W
-error::ResourceWarning -m unittest discover -s tests -p 'test_*.py' -q` for the
-full gate. After approved host activation, `tests/check_project_actions.py`
+(including httpx and MCP SDK); the shared `python3 scripts/verify.py` gate above
+builds it and rejects all skips. `--units-only` is explicitly partial.
+After approved host activation, `tests/check_project_actions.py`
 performs read-only run/job/rules/log qualification without printing raw logs.
 See [Actions diagnostics](../docs/actions-diagnostics.md) for exact arguments,
 default-deny storage host configuration and explicitly pending live checks.
