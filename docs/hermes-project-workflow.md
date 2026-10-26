@@ -69,8 +69,11 @@ then create a `hermes/` proposal branch from `main`, submit changed text files
 with `commit_proposal_files`, and open a draft through
 `open_proposal_pull_request`. Local workspace Git operations do not receive App
 credentials: publication happens through MCP rather than authenticated Git push.
-Tools fix the owner/repository/base and reject protected files and workflow
-changes. The foundation should reach `main` before functional improvements are proposed;
+Tools fix the owner/repository/base and reject protected files. Workflow changes
+remain disabled until owner security verification and host activation; then only
+the finite verification envelope is accepted through the existing commit tool,
+with complete proposed-set validation. See [CI verification](ci-verification.md).
+The foundation should reach `main` before functional improvements are proposed;
 otherwise `main` lacks the code in the feature reference. Its CODEOWNERS file
 assigns all files to the human owner and becomes effective on the base branch
 after merge. The current foundation PR is authored by the human, so it needs
