@@ -79,9 +79,13 @@ credential, upstream command or API URL. The proposal and issue-management tools
 | `comment_on_project_issue` | Issue-only comment with durable request UUID and exact readback |
 
 All three proposal write tools recheck GitHub protection before their operation. Protected
-paths, key files, traversal and workflow writes are rejected. PEM private-key
-content is rejected from commits. There is no merge, approval, auto-merge,
-branch-delete, workflow, administrative, generic API or command-execution tool.
+paths, key files and traversal are rejected. Workflow writes are disabled by
+default; after owner security verification and host activation, the existing
+commit tool accepts only the finite verification envelope and validates the
+complete proposed workflow set. See [CI verification and activation gates](ci-verification.md).
+PEM private-key content is rejected from commits. There is no merge, approval,
+auto-merge, branch-delete, workflow dispatch/rerun, administrative, generic API
+or command-execution tool.
 Backend errors are sanitized; upstream stderr is not forwarded to agent logs.
 
 ## Issue management and replay safety
