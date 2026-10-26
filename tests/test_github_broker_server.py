@@ -224,6 +224,9 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             (False, [], True, False),
             (True, [], True, True),
             (True, ['verify.yml'], False, True),
+            (False, ['verify.yml'], False, True),
+            (False, ['verify.yml'], True, False),
+            (False, ['unsafe.yml'], False, False),
             (True, ['unsafe.yml'], False, False),
         ):
             calls = []
