@@ -25,6 +25,7 @@ class DockerDouble:
         self.fail_login = False
         self.checkout_exists = False
         self.broker_running = False
+        self.live_workflows = ''
         self.networks = []
         self.routes = [{"dst": "default", "dev": "eth0"}]
         self.config = {
@@ -64,6 +65,9 @@ class DockerDouble:
             return "\n".join(json.dumps({"Service": name, "State": "running" if self.running else "exited", "Health": "healthy" if name == "squid" else ""}) for name in names)
         if command[:1] == ["up"]:
             self.running = True
+            if command[-1] == 'github-broker':
+                self.broker_running = True
+                self.live_workflows = kwargs['env']['BROKER_WORKFLOW_PUBLICATION']
         if command[:1] == ["stop"]:
             self.running = False
         if command[:1] == ["restart"]:
@@ -75,6 +79,8 @@ class DockerDouble:
         if "logout" in command:
             self.logged_in = False
         if "-c" in command:
+            if 'BROKER_WORKFLOW_PUBLICATION' in command[-1]:
+                return 'enabled' if self.live_workflows == 'verified' else 'disabled'
             if "p.is_symlink()" in command[-1]:
                 return "yes" if self.checkout_exists else "no"
             if "print('yes'" in command[-1]:
@@ -181,6 +187,127 @@ class DevLoopTests(unittest.TestCase):
         with patch("scripts.devloop.terminal", return_value=True), patch("builtins.input", return_value="2"):
             self.app.project()
         self.assertIn("Prepare a new writable checkout", self.output.getvalue())
+
+    def test_workflow_status_defaults_disabled_and_reports_broker_unavailable(self):
+        cli = devloop.parser()
+        args = cli.parse_args(['github', '--workflows', 'status'])
+        devloop.dispatch(self.app, args, cli)
+        self.assertIn('Workflow publication configured: disabled', self.output.getvalue())
+        self.assertIn('Workflow publication live: unavailable', self.output.getvalue())
+        self.assertFalse(self.app.settings.exists())
+        self.assertEqual(self.commands(), [['ps', '--all', '--format', 'json']])
+
+    def test_workflow_enable_persists_applies_only_broker_and_verifies_live_state(self):
+        self.app.save_model('nous/model-a')
+        settings = json.loads(self.app.settings.read_text())
+        settings['custom'] = 'preserve'
+        self.app.settings.write_text(json.dumps(settings))
+        self.runner.broker_running = True
+        self.runner.live_workflows = ''
+        with patch.dict(os.environ, {'BROKER_WORKFLOW_PUBLICATION': 'untrusted'}):
+            self.app.github(workflows='enable')
+        saved = json.loads(self.app.settings.read_text())
+        self.assertIs(saved['workflow_publication'], True)
+        self.assertEqual(saved['custom'], 'preserve')
+        self.assertEqual(saved['model'], 'nous/model-a')
+        self.assertEqual(self.app.settings.stat().st_mode & 0o777, 0o600)
+        up = [(args, options) for args, options in self.runner.calls if '--force-recreate' in args]
+        self.assertEqual(len(up), 1)
+        self.assertEqual(up[0][0][8:], ['--profile', 'github', 'up', '-d', '--no-deps', '--force-recreate', '--wait', '--wait-timeout', '60', 'github-broker'])
+        self.assertEqual(up[0][1]['env']['BROKER_WORKFLOW_PUBLICATION'], 'verified')
+        self.assertIn('Workflow publication live: enabled', self.output.getvalue())
+        self.assertFalse(any('restart' in command or 'build' in command for command in self.commands()))
+
+    def test_github_interactive_workflow_submenu_dispatches_control(self):
+        with patch('scripts.devloop.terminal', return_value=True), \
+             patch('builtins.input', side_effect=['6', '3']):
+            self.app.github()
+        self.assertIn('Workflow publication', self.output.getvalue())
+        self.assertIn('Workflow publication configured: disabled', self.output.getvalue())
+
+    def test_workflow_change_reports_the_verified_read_without_second_probe(self):
+        self.runner.broker_running = True
+        with patch.object(self.app, 'live_workflow_publication', side_effect=['enabled', 'unavailable']) as probe:
+            self.app.github(workflows='enable')
+        self.assertEqual(probe.call_count, 1)
+        self.assertIn('Workflow publication live: enabled', self.output.getvalue())
+
+    def test_workflow_disable_persists_across_lifecycle_and_model_changes(self):
+        self.prepare()
+        self.runner.broker_running = True
+        self.app.github(workflows='enable')
+        self.app.save_model('nous/model-a')
+        (self.app.control / 'github-enabled').write_text('enabled\n')
+        fresh = devloop.DevLoop(self.root, self.runner)
+        fresh.start()
+        fresh.rebuild()
+        self.assertEqual(self.runner.live_workflows, 'verified')
+        fresh.github(workflows='disable')
+        fresh.save_model('nous/model-b')
+        fresh.start()
+        fresh.rebuild()
+        self.assertIs(json.loads(fresh.settings.read_text())['workflow_publication'], False)
+        self.assertEqual(self.runner.live_workflows, '')
+        self.assertIn('Workflow publication live: disabled', self.output.getvalue())
+
+    def test_workflow_status_shows_configured_live_mismatch_without_writes(self):
+        self.app.private_control()
+        self.app.settings.write_text('{"workflow_publication": true}')
+        self.runner.broker_running = True
+        before = self.app.settings.read_bytes()
+        self.app.github(workflows='status')
+        self.assertIn('configured: enabled', self.output.getvalue())
+        self.assertIn('live: disabled', self.output.getvalue())
+        self.assertEqual(self.app.settings.read_bytes(), before)
+        self.assertTrue(all(command[0] in ('ps', 'exec') for command in self.commands()))
+
+    def test_workflow_apply_failure_retains_desired_setting_without_claiming_success(self):
+        for failure in ('stopped', 'recreate', 'mismatch', 'unavailable'):
+            with self.subTest(failure=failure):
+                self.runner.broker_running = failure != 'stopped'
+                run = self.runner.run
+                def broken(args, **options):
+                    if failure == 'recreate' and '--force-recreate' in args:
+                        raise devloop.Error('Docker failed')
+                    return run(args, **options)
+                with patch.object(self.runner, 'run', side_effect=broken), \
+                     patch.object(self.app, 'live_workflow_publication', return_value='disabled' if failure == 'mismatch' else 'unavailable'):
+                    with self.assertRaisesRegex(devloop.Error, 'saved, but live application was not verified'):
+                        self.app.github(workflows='enable')
+                self.assertIs(json.loads(self.app.settings.read_text())['workflow_publication'], True)
+        self.assertNotIn('live: enabled', self.output.getvalue())
+
+    def test_workflow_control_rejects_unsafe_or_invalid_settings_without_docker(self):
+        self.app.private_control()
+        for content in ('corrupt', '[]', '{"workflow_publication": "false"}'):
+            self.app.settings.write_text(content)
+            with self.subTest(content=content), self.assertRaises(devloop.Error):
+                self.app.github(workflows='enable')
+            self.assertEqual(self.app.settings.read_text(), content)
+        self.app.settings.unlink()
+        outside = self.root / 'outside.json'
+        outside.write_text('{}')
+        self.app.settings.symlink_to(outside)
+        with self.assertRaises(devloop.Error):
+            self.app.github(workflows='disable')
+        self.assertEqual(outside.read_text(), '{}')
+        self.assertEqual(self.runner.calls, [])
+
+    def test_workflow_control_obeys_administration_lock(self):
+        with self.app.administration(), self.assertRaisesRegex(devloop.Error, 'Another DevLoop'):
+            self.app.github(workflows='enable')
+        self.assertFalse(self.app.settings.exists())
+        self.assertEqual(self.runner.calls, [])
+
+    def test_workflow_default_overrides_ambient_environment_for_all_lifecycle_calls(self):
+        with patch.dict(os.environ, {'BROKER_WORKFLOW_PUBLICATION': 'verified'}):
+            self.app.dc('config', '--format', 'json')
+        self.assertEqual(self.runner.calls[-1][1]['env']['BROKER_WORKFLOW_PUBLICATION'], '')
+
+    def test_runner_passes_host_setting_to_real_subprocess(self):
+        value = devloop.Runner().run([sys.executable, '-I', '-c', "import os; print(os.environ['BROKER_WORKFLOW_PUBLICATION'])"],
+                                    env={**os.environ, 'BROKER_WORKFLOW_PUBLICATION': 'verified'})
+        self.assertEqual(value, 'verified')
 
     def test_github_status_has_no_docker_or_remote_actions(self):
         store = devloop.AppSettings(self.root / 'private/github')
@@ -453,7 +580,7 @@ class DevLoopTests(unittest.TestCase):
             self.app.network_check()
 
     def test_log_filter_masks_common_credentials_and_terminal_escapes(self):
-        text = '\x1b[31mAuthorization: Bearer very-secret\n{"refresh_token":"another-secret"}\naccess_token=value\n'
+        text = '\x1b[31mAuthorization: Bearer ***"refresh_token":"another-secret"}\naccess_token=value\n'
         output = devloop.redact(text)
         self.assertNotIn("very-secret", output)
         self.assertNotIn("another-secret", output)

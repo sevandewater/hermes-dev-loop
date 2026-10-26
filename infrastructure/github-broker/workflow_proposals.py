@@ -36,7 +36,7 @@ async def validate_proposal(call, branch, files):
             workflows[entry['path']] = None
     proposed = {f['path']: f['content'] for f in files if f['path'].startswith('.github/workflows/')}
     workflows.update(proposed)
-    if workflows and os.environ.get('BROKER_WORKFLOW_PUBLICATION') != 'verified':
+    if proposed and os.environ.get('BROKER_WORKFLOW_PUBLICATION') != 'verified':
         raise PolicyError('Workflow publication disabled pending owner security verification and activation.')
     for path, text in workflows.items():
         if text is None:
