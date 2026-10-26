@@ -96,7 +96,9 @@ aiohttp 3.14.3. The process exited with status 0 and printed:
 ```
 
 Observed: the actual upstream transport contacted the direct loopback listener,
-while the positive control contacted the proxy listener. This was an HTTP loopback diagnostic, not a deployed gateway or HTTPS CONNECT test.
+while the positive control contacted the proxy listener. Inference transport
+therefore ignores these environment settings at the reviewed source pin. This
+was an HTTP loopback diagnostic, not a deployed gateway or HTTPS CONNECT test.
 The diagnostic itself did not execute foundation security-boundary or persistence
 tests. Subsequent [foundation validation](../docs/security-validation.md) and
 [CLI validation](../docs/devloop-validation.md) record those separate runs.
