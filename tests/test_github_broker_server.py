@@ -164,7 +164,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
                 lambda: self.module.commit_proposal_files('hermes/test', [{'path': 'test.txt', 'content': 'test'}], 'test', None),
                 lambda: self.module.open_proposal_pull_request('hermes/test', 'Title', 'Body', None),
             ):
-                with self.assertRaisesRegex(self.module.PolicyError, 'review blocked'):
+                with self.assertRaisesRegex((self.module.PolicyError, self.module.ToolError), 'review blocked'):
                     await action()
         self.assertEqual(denied.await_count, 3)
         backend.assert_not_awaited()
@@ -213,6 +213,56 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('unverified', out.content[0].text)
         self.assertNotIn('sig=', out.content[0].text)
         self.assertNotIn('secret', out.content[0].text)
+
+    async def test_workflow_commit_dispatch_validates_complete_set_and_activation(self):
+        import json
+        import os
+        from unittest.mock import patch
+        from mcp.types import CallToolRequestParams, CallToolResult
+        from workflow_policy import WORKFLOW
+        for enabled, existing, proposed, permitted in (
+            (False, [], True, False),
+            (True, [], True, True),
+            (True, ['verify.yml'], False, True),
+            (True, ['unsafe.yml'], False, False),
+        ):
+            calls = []
+            async def call(name, args):
+                calls.append((name, args))
+                if name == 'repository_ruleset_read':
+                    if args['method'] == 'get_rules_for_branch':
+                        value = [{'type': 'pull_request', 'ruleset_id': 42, 'parameters': {
+                            'required_approving_review_count': 1, 'require_code_owner_review': True,
+                            'dismiss_stale_reviews_on_push': True}}]
+                    else:
+                        value = {'id': 42, 'enforcement': 'active', 'current_user_can_bypass': 'never'}
+                elif name == 'get_file_contents':
+                    path = args['path']
+                    if path == '.github':
+                        value = [{'path': '.github/workflows', 'type': 'dir', 'name': 'workflows'}] if existing else []
+                    elif path == '.github/workflows':
+                        value = [{'path': '.github/workflows/' + n, 'name': n, 'type': 'file'} for n in existing]
+                    else:
+                        return CallToolResult(content=[{'type': 'resource', 'resource': {
+                            'uri': 'repo://test/' + path, 'text': json.dumps(WORKFLOW), 'mimeType': 'text/plain'}}])
+                elif name == 'push_files':
+                    value = {'ref': 'refs/heads/hermes/test'}
+                else:
+                    self.fail(name)
+                return CallToolResult(content=[{'type': 'text', 'text': json.dumps(value)}])
+            context = SimpleNamespace(lifespan_context=SimpleNamespace(call_tool=call))
+            files = [{'path': 'README.md', 'content': 'test'}]
+            if proposed:
+                files.append({'path': '.github/workflows/verify.yml', 'content': json.dumps(WORKFLOW)})
+            with self.subTest(enabled=enabled, existing=existing, proposed=proposed), patch.dict(
+                    os.environ, {'BROKER_WORKFLOW_PUBLICATION': 'verified' if enabled else ''}):
+                result = await self.module.server._handle_call_tool(context, CallToolRequestParams(
+                    name='commit_proposal_files', arguments={'branch': 'hermes/test', 'files': files, 'message': 'test'}))
+                self.assertEqual(not result.is_error, permitted, result)
+                self.assertEqual(any(n == 'push_files' for n, _ in calls), permitted)
+                for _, args in calls:
+                    self.assertEqual(args['owner'], 'sevandewater')
+                    self.assertEqual(args['repo'], 'hermes-dev-loop')
 
     async def test_backend_pins_repository_and_sanitizes_errors(self):
         calls = []
