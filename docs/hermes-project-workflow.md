@@ -70,7 +70,13 @@ with `commit_proposal_files`, and open a draft through
 `open_proposal_pull_request`. Local workspace Git operations do not receive App
 credentials: publication happens through MCP rather than authenticated Git push.
 Tools fix the owner/repository/base and reject protected files. Workflow changes
-remain disabled until owner security verification and host activation; then only
+remain normally disabled. After the one-time premerge security prerequisites,
+human merge, host pull and `./devloop github --start`, the host administrator may
+use `./devloop github --workflows enable` only for authorized workflow-file edits,
+then `./devloop github --workflows disable`. These controls apply and verify the
+live broker without a manual restart; `--workflows status` separates configured
+and live/unavailable state. They do not verify GitHub admin settings. Existing
+CI execution and ordinary code proposals continue disabled. When enabled, only
 the finite verification envelope is accepted through the existing commit tool,
 with complete proposed-set validation. See [CI verification](ci-verification.md).
 The foundation should reach `main` before functional improvements are proposed;

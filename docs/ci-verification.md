@@ -57,11 +57,14 @@ it neither provisions nor certifies that interpreter and **does not build images
 It is useful for agent work without Docker, never a replacement for the full CI
 gate. The full command can also be invoked by absolute path from another directory.
 
-## Human activation gates (not performed by this change)
+## One-time premerge security prerequisites (human-owned)
 
-A local workflow example is not publication or activation. Before an owner
-publishes/enables any Actions workflow or makes its check required, the owner must
-inspect repository, organization and enterprise policy and record approval:
+Before merging this bootstrap and before first enabling workflow publication,
+the owner must inspect repository, organization and enterprise policy and record
+approval of the prerequisites below. This is a one-time security review, not a
+checklist repeated for each ordinary workflow edit; revisit it if these security
+conditions change. The host control does not verify GitHub administrative settings.
+Requiring a new check still needs the runner/check-identity qualification below:
 
 - Run untrusted PR code only on fresh ephemeral GitHub-hosted Linux amd64 runners,
   not self-hosted/persistent runners or privileged host/network bridges. Docker
@@ -98,10 +101,51 @@ authorized writer could therefore invalidate the inventory between validation
 and publication. No atomic-write adapter or additional writer restrictions are
 required under this accepted assumption.
 
-This acceptance does not waive the human activation gates above. Leave
-`BROKER_WORKFLOW_PUBLICATION` unset until the owner has verified those gates and
-activated the reviewed broker. Only then set it to `verified` on the host.
-No live workflow is included in the bootstrap proposal.
+## Host workflow-publication control
+
+After human review and merge, pull the approved source on the host and run
+`./devloop github --start` to rebuild/activate the broker. Source edits or merge
+alone do not activate it. No live workflow is included in the bootstrap proposal.
+
+Normally leave workflow publication **disabled**. Enable it only while explicitly
+authorizing workflow-file proposals, then disable it afterward:
+
+```bash
+./devloop github --workflows status
+./devloop github --workflows enable
+# Publish the authorized workflow-file proposal through the existing commit tool.
+./devloop github --workflows disable
+```
+
+The **github → Workflow publication** submenu provides the same controls. Enable
+is authorization by the host administrator, not proof of the prerequisites above.
+It grants only the existing finite JSON verification envelope, not arbitrary
+Actions YAML, dispatch/rerun, secrets, permissions or GitHub administration.
+Existing CI execution and ordinary code proposals continue while disabled,
+including when the branch already contains workflows.
+
+The boolean `workflow_publication` is stored atomically in private host-owned
+`runtime/devloop/settings.json` (default false), preserving model/unknown settings.
+It is not mounted into Hermes. DevLoop passes the resulting `verified`/empty value
+to Compose as `BROKER_WORKFLOW_PUBLICATION`, overriding ambient environment and
+`.env` for DevLoop invocations. Do not edit `.env` to toggle this control or use raw
+Compose as a substitute: raw Compose does not load the host JSON setting.
+All DevLoop lifecycle actions use the saved value, including broker startup and
+rebuild. No Compose change or new service/mount is needed.
+
+Enable/disable share the administration lock and recreate **only the running
+broker** with `--no-deps`, then read the actual container environment using isolated
+Python and compare it to the requested state. No manual restart, rebuild, other
+service restart or remote GitHub mutation is performed. Status is read-only and
+shows configured and live enabled/disabled separately; stopped/unreachable or
+unreadable live state is `unavailable`, never inferred from configuration.
+
+If application fails, the desired setting remains saved and the command returns
+nonzero without claiming live success. A failed disable may leave a live broker
+enabled: inspect status and retry disable after Docker/broker recovery. If the
+broker was stopped, start it with `./devloop github --start`, then recheck status.
+The saved setting will be used on that start.
+
 
 ## Evidence boundaries
 
