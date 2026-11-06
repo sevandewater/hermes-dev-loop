@@ -101,6 +101,11 @@ services:
         target: /etc/squid/devloop
         read_only: true
         bind: {create_host_path: false}
+      - type: bind
+        source: ./runtime/devloop/log-policy
+        target: /etc/squid/log-policy
+        read_only: true
+        bind: {create_host_path: false}
     healthcheck:
       test: [CMD, python3, -c, "import socket; socket.create_connection(('10.237.80.2', 3128), 3).close()"]
       interval: 5s

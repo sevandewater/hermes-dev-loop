@@ -74,33 +74,98 @@ cached or published by the broker. Metadata and logs are not trusted instruction
 
 ## Owner-only activation: default deny
 
-No storage hostname has been approved or enabled in this proposal. Metadata
-reads and URL acquisition do not require storage egress; downloads will fail
-closed until separately activated. Merge is not deployment or live qualification.
+Log downloads remain disabled until the host owner explicitly opts in. Merge is
+not deployment or live qualification. After reviewed merge and separate approval
+for host rebuild/migration and activation, use the **trusted host checkout**, never
+an agent shell. Existing installations must rebuild the reviewed images **before**
+enabling: the new Squid entrypoint prepares `/run/github-log-hosts.txt`, so an old
+image cannot parse the new configuration. `enable` does not build images. During
+supervised downtime, first migrate with the policy still at its default deny:
 
-During an approved host activation, a trusted operator may inspect a URL response
-inside the broker and capture **only the canonical hostname**, never its path,
-query, credentials or full URL. Obtain explicit owner approval for each needed
-hostname. Then:
+```sh
+./devloop rebuild
+./devloop github --log-hosts enable
+./devloop github --log-hosts status
+./devloop github --log-hosts refresh
+./devloop github --log-hosts disable
+```
 
-- Add only those exact lowercase hostnames, one per line, to
-  `infrastructure/squid/github-log-hosts.txt`. Never use a leading dot, wildcard,
-  parent-domain allowance or URL. This file ships comment-only (empty ACL).
-- Set broker-only `BROKER_LOG_HOSTS` to the same comma-separated exact hosts in
-  the host deployment environment. Default is empty. Do not set it for Hermes.
-- Validate Squid configuration (`squid -k parse`) and rebuild/recreate the broker
-  and reload/recreate Squid through the approved human deployment procedure.
-  Qualify comment-only empty-ACL behavior with the deployed Squid version first.
-- Verify broker-source-only CONNECT 443 access, unchanged agent egress and
-  private-destination rejection, including approved-host DNS resolving private.
-  Do not bypass Squid or add direct egress to make a failed download work.
+`enable` authorizes future matching updates from GitHub's fixed
+`https://api.github.com/meta` endpoint, not arbitrary URL destinations. Only
+`domains.actions_inbound.full_domains` entries fully matching
+`^productionresultssa[0-9]+\.blob\.core\.windows\.net$` are accepted, sorted
+and deduplicated. No wildcard, parent domain, URL or alternate spelling is allowed.
+Selected and cached names must also satisfy DNS length bounds (253 characters per
+hostname, 63 per label). The comma-joined ASCII host set is capped at 65,536 bytes
+before persistence or Compose use, below Linux's per-environment-string limit;
+oversized sets fail as a whole and retain the prior valid snapshot.
+The host fetch uses verified TLS, no redirects, no App credentials, the host's
+configured proxy routing, at most 2,000,000 bytes, a 5-second socket timeout and a
+12-second overall child-process budget (including DNS/slow reads). No metadata
+fetch capability is exposed to the agent or broker.
 
-The new Squid ACL is broker-only and still follows private-destination rejection.
-The agent allowlist is unchanged. No live network/credential policy was activated
-by writing this source. Roll back by clearing both host configurations and
-recreating/reloading the services.
+Opt-in is saved in private `runtime/devloop/settings.json`, outside agent mounts.
+This file also holds the **single validated last-known-good snapshot**, fetch time
+and latest outcome. Start/setup/rebuild and broker start refresh only after opt-in;
+there is no background scheduler. Explicit `refresh` requires opt-in. A failed,
+empty or malformed fetch keeps the prior valid snapshot and warns with its age;
+without valid cache, logs stay denied and ordinary services may still start.
+Success applies additions **and removals**. Status never describes cached data as
+fresh: it reports last outcome, age, configured policy and each running layer's
+match/mismatch/unavailable state. An unknown signed-URL host remains denied; ask
+the owner to refresh rather than auto-authorizing it.
+
+The host derives the broker's exact `BROKER_LOG_HOSTS` environment and Squid's
+ACL from that same snapshot; ambient/manual `BROKER_LOG_HOSTS` is overridden by
+`./devloop`. Do not use raw Compose to manage policy or edit the generated ACL.
+`runtime/devloop/log-policy` is a private host-owned read-only **directory** mount
+into Squid only. Atomic ACL replacement is mount-safe; Squid copies it into
+`/run/github-log-hosts.txt` at process start, allowing saved/live comparison.
+The shipped comment-only `infrastructure/squid/github-log-hosts.txt` is retained
+as historical default-deny evidence, not an active policy source.
+
+Administration uses the existing host lock. Changes stop the running broker first
+(to close existing tunnels), validate Compose and parse Squid in a disposable
+no-dependencies container, then recreate running Squid and broker and read back
+their policy. An unchanged verified policy avoids recreation. Stopped services
+remain stopped until normal start. This is **not an atomic cross-service update**.
+On partial failure, the CLI attempts to stop both services, verifies stopped state
+and reports saved policy separately from unverified live state. If stop cannot be
+verified, live access is explicitly unknown: stop the services with trusted host
+Docker administration before recovery. Fix Docker/configuration, then run
+`./devloop start` and `./devloop github --log-hosts status`. `disable` preserves
+the cache but removes effective access in both layers, without fetching. It must
+complete successfully (or the services must be stopped) to establish live denial.
+
+Broker-source-only CONNECT/443 and private-destination rejection—including
+approved names resolving privately—are unchanged. The agent allowlist, downloader
+proxy/TLS/auth isolation and all download bounds are unchanged. No host Docker or
+credential authority is granted to the agent.
 
 ## Verification and remaining host checks
+
+Issue #22 local source verification: the pinned-SDK suite and actual
+`scripts/verify.py --units-only` gate pass **181 tests**, including 26 host-policy
+tests and unchanged packaging regressions. CLI/helper help and shell syntax checks
+pass. Test-first failures established missing selection, validation, bounded fetch,
+controls, live status, lifecycle and failure recovery before their implementation;
+a replay of the selection regression against base
+`4cfce9bb582dad77720564db9c58711115e233e7` failed as expected. Fixtures and Docker doubles
+are not live network or deployed Squid evidence.
+The initial 176-test result preceded review fixes. Five test-first regressions now
+exercise deeply nested JSON startup fallback, invalid DNS lengths, oversized
+metadata/cache denial and the reviewed default-deny rebuild-before-enable migration.
+
+Still pending after reviewed merge and separately approved host activation:
+image builds, real Squid parse/empty-ACL behavior, broker access plus agent denial
+to selected storage hosts, private-resolution denial, and bounded real log reads
+for failed run **40395117019** and successful run **40395474454**, **attempt 1**.
+Retain exact run/job/reported SHA and completion evidence privately; never publish
+raw logs or signed URLs. Do not trigger/rerun workflows. Independent fresh-context
+review is required before publication. Issues #22 and #13 stay open until their
+live acceptance is qualified; source PRs use non-closing references.
+
+### Historical source-proposal evidence (retained)
 
 Run the complete pinned-SDK local gate:
 
