@@ -79,6 +79,10 @@ class DockerDouble:
         if "logout" in command:
             self.logged_in = False
         if "-c" in command:
+            if '/run/github-log-hosts.txt' in command[-1]:
+                return '[]'
+            if 'BROKER_LOG_HOSTS' in command[-1]:
+                return json.dumps([s for s in kwargs['env']['BROKER_LOG_HOSTS'].split(',') if s])
             if 'BROKER_WORKFLOW_PUBLICATION' in command[-1]:
                 return 'enabled' if self.live_workflows == 'verified' else 'disabled'
             if "p.is_symlink()" in command[-1]:
@@ -147,7 +151,9 @@ class DevLoopTests(unittest.TestCase):
         self.assertEqual(workspace.read_text(), "keep my project")
         self.assertEqual(gateway.read_text(), "not-a-real-token")
         self.assertEqual(self.app.selected_model(), "nous/model-a")
-        self.assertFalse(any("--force-recreate" in args for args in self.commands()))
+        recreates = [args for args in self.commands() if '--force-recreate' in args]
+        self.assertEqual(len(recreates), 1)  # initial migration to managed empty ACL
+        self.assertEqual(recreates[0][-1], 'squid')
 
     def test_fresh_env_is_private(self):
         self.prepare()

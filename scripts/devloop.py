@@ -121,6 +121,65 @@ class Error(Exception):
     pass
 
 
+LOG_HOST_PATTERN = re.compile(r'productionresultssa[0-9]+\.blob\.core\.windows\.net')
+# ASCII hostnames plus separators; leave ample room below Linux's per-string
+# exec limit for the environment key and terminating NUL.
+MAX_LOG_HOST_BYTES = 65_536
+
+
+def select_log_hosts(payload):
+    try:
+        value = json.loads(payload)
+        hosts = value['domains']['actions_inbound']['full_domains']
+        if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
+            raise ValueError()
+        selected = sorted({host for host in hosts if LOG_HOST_PATTERN.fullmatch(host)})
+        if (not selected or len(','.join(selected).encode('ascii')) > MAX_LOG_HOST_BYTES
+                or any(len(host) > 253 or any(len(label) > 63 for label in host.split('.'))
+                                for host in selected)):
+            raise ValueError()
+        return selected
+    except (ValueError, KeyError, TypeError, RecursionError):
+        raise Error('Metadata has malformed, unsupported or empty log-host data.') from None
+
+
+# An isolated child gives DNS, TLS and slow-drip reads one hard wall-clock
+# budget without installing a process-global alarm in the administrator CLI.
+METADATA_FETCH = r'''
+import ssl, sys, urllib.request
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler(), NoRedirect(),
+    urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+request = urllib.request.Request('https://api.github.com/meta', headers={
+    'Accept': 'application/json', 'Accept-Encoding': 'identity',
+    'User-Agent': 'hermes-dev-loop-host'})
+try:
+    with opener.open(request, timeout=5) as response:
+        if response.status != 200 or response.headers.get('Content-Encoding', 'identity') != 'identity':
+            raise ValueError()
+        payload = response.read(2_000_001)
+        if len(payload) > 2_000_000:
+            raise ValueError()
+    sys.stdout.buffer.write(payload)
+except Exception:
+    sys.exit(1)
+'''
+
+
+def fetch_log_hosts():
+    try:
+        result = subprocess.run([sys.executable, '-I', '-c', METADATA_FETCH],
+                                capture_output=True, timeout=12)
+        if result.returncode or len(result.stdout) > 2_000_000:
+            raise ValueError()
+        return select_log_hosts(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        raise Error('Metadata fetch failed (network, TLS, redirect, size or time limit).') from None
+
+
 def terminal():
     return sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -214,6 +273,7 @@ class DevLoop:
 
     def dc(self, *args, **kwargs):
         environment = dict(os.environ)
+        environment['BROKER_LOG_HOSTS'] = ','.join(self.effective_log_hosts())
         environment['BROKER_WORKFLOW_PUBLICATION'] = 'verified' if self.host_settings().get('workflow_publication', False) else ''
         return self.runner.run(self.compose + list(args), label="Docker Compose", env=environment, **kwargs)
 
@@ -264,6 +324,8 @@ class DevLoop:
             raise Error("Host settings must contain a JSON object.")
         if 'workflow_publication' in settings and type(settings['workflow_publication']) is not bool:
             raise Error("Host workflow_publication setting must be a boolean.")
+        if 'log_hosts_enabled' in settings and type(settings['log_hosts_enabled']) is not bool:
+            raise Error('Host log_hosts_enabled setting must be a boolean.')
         return settings
 
     def selected_model(self):
@@ -465,6 +527,151 @@ class DevLoop:
                 self.dc("exec", "-T", "hermes", "/usr/local/bin/python3", "-I", "-", info["revision"],
                         data=PROJECT_CHECKOUT, capture=False, timeout=120)
 
+    def effective_log_hosts(self):
+        settings = self.host_settings()
+        if not settings.get('log_hosts_enabled', False):
+            return []
+        return self.log_snapshot(settings).get('hosts', [])
+
+    def log_snapshot(self, settings=None):
+        snapshot = (self.host_settings() if settings is None else settings).get('log_snapshot')
+        try:
+            hosts = snapshot['hosts']
+            stamp = snapshot['fetched_at']
+            if (not isinstance(hosts, list) or not hosts
+                    or not all(isinstance(h, str) and LOG_HOST_PATTERN.fullmatch(h)
+                               and len(h) <= 253 and all(len(label) <= 63 for label in h.split('.'))
+                               for h in hosts)
+                    or hosts != sorted(set(hosts))
+                    or len(','.join(hosts).encode('ascii')) > MAX_LOG_HOST_BYTES
+                    or type(stamp) not in (int, float) or not 0 < stamp <= time.time()):
+                return {}
+            return snapshot
+        except (TypeError, KeyError):
+            return {}
+
+    def refresh_log_hosts(self):
+        try:
+            hosts = fetch_log_hosts()
+            self.save_settings({'log_snapshot': {'hosts': hosts, 'fetched_at': time.time()},
+                                'log_fetch': 'success'})
+        except Error:
+            self.save_settings({'log_fetch': 'failed; previous valid snapshot retained'})
+            print('Warning: metadata fetch failed; using last-known-good data, if valid.')
+        snapshot = self.log_snapshot()
+        age = max(0, int(time.time() - snapshot['fetched_at'])) if snapshot else 'unavailable'
+        print(f'Log snapshot age (seconds): {age}')
+
+    def log_hosts(self, action):
+        if action == 'status':
+            settings = self.host_settings()
+            expected = self.effective_log_hosts()
+            print('Log hosts configured: ' + ('enabled' if settings.get('log_hosts_enabled', False) else 'disabled'))
+            snapshot = self.log_snapshot(settings)
+            age = max(0, int(time.time() - snapshot['fetched_at'])) if snapshot else 'unavailable'
+            print(f'Log snapshot age (seconds): {age}; effective hosts: {len(expected)}')
+            print('Last metadata fetch: ' + settings.get('log_fetch', 'never'))
+            for name, hosts in self.live_log_hosts().items():
+                state = 'unavailable' if hosts is None else ('matches saved' if hosts == expected else 'differs from saved')
+                print(f'{name} live: {state}')
+            return
+        with self.administration():
+            if action == 'refresh' and not self.host_settings().get('log_hosts_enabled', False):
+                raise Error('Log hosts are disabled. Use ./devloop github --log-hosts enable to opt in.')
+            if action in ('enable', 'disable'):
+                self.save_settings({'log_hosts_enabled': action == 'enable'})
+            if action != 'disable':
+                self.refresh_log_hosts()
+            self.apply_log_hosts()
+
+    def prepare_log_start(self):
+        if self.host_settings().get('log_hosts_enabled', False):
+            self.refresh_log_hosts()
+        self.apply_log_hosts()
+
+    def live_log_hosts(self):
+        result = {'squid': None, 'github-broker': None}
+        try:
+            rows = self.services()
+        except Error:
+            return result
+        probes = {
+            'squid': "import json,pathlib; print(json.dumps([s for s in pathlib.Path('/run/github-log-hosts.txt').read_text().splitlines() if s and not s.startswith('#')]))",
+            'github-broker': "import json,os; print(json.dumps([s for s in os.environ.get('BROKER_LOG_HOSTS','').split(',') if s]))",
+        }
+        for name, code in probes.items():
+            if rows.get(name, {}).get('State') != 'running':
+                continue
+            try:
+                hosts = decoded(self.dc('exec', '-T', name, '/usr/local/bin/python3', '-I', '-c', code), 'Live log policy')
+                if isinstance(hosts, list) and all(isinstance(h, str) for h in hosts):
+                    result[name] = hosts
+            except Error:
+                pass
+        return result
+
+    def write_log_acl(self):
+        self.private_control()
+        directory = self.control / 'log-policy'
+        if directory.is_symlink():
+            raise Error('Refusing symlinked log policy directory.')
+        directory.mkdir(mode=0o700, exist_ok=True)
+        path = directory / 'github-log-hosts.txt'
+        if path.is_symlink():
+            raise Error('Refusing symlinked log ACL.')
+        # Mount the directory, not this inode: replacement remains visible to Docker.
+        with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(''.join(host + '\n' for host in self.effective_log_hosts()) or '# No log hosts enabled\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def apply_log_hosts(self):
+        try:
+            rows = self.services()
+            broker = rows.get('github-broker', {}).get('State') == 'running'
+            squid = rows.get('squid', {}).get('State') == 'running'
+            expected = self.effective_log_hosts()
+            acl = self.control / 'log-policy/github-log-hosts.txt'
+            if acl.is_file() and not acl.is_symlink():
+                live = self.live_log_hosts()
+                if squid and live['squid'] == expected and (not broker or live['github-broker'] == expected):
+                    self.write_log_acl()
+                    return
+            # Quiesce downloads before changing either layer (also closes tunnels).
+            if broker:
+                self.dc('--profile', 'github', 'stop', 'github-broker', timeout=60)
+            self.write_log_acl()
+            self.dc('--profile', 'github', 'config', '--quiet')
+            self.dc('run', '--rm', '--no-deps', 'squid', 'squid', '-k', 'parse',
+                    '-f', '/etc/squid/devloop/squid.conf', timeout=30)
+            if squid:
+                self.dc('up', '-d', '--no-deps', '--force-recreate', '--wait',
+                        '--wait-timeout', '60', 'squid', timeout=90)
+            if broker:
+                self.dc('--profile', 'github', 'up', '-d', '--no-deps', '--force-recreate',
+                        '--wait', '--wait-timeout', '60', 'github-broker', timeout=90)
+            live = self.live_log_hosts()
+            for name, running in (('squid', squid), ('github-broker', broker)):
+                if running and live[name] != self.effective_log_hosts():
+                    raise Error(f'{name} live policy differs from saved policy.')
+            print('Log policy saved; running layers verified. Stopped layers apply at next start.')
+        except (Error, OSError):
+            try:
+                self.dc('--profile', 'github', 'stop', 'github-broker', 'squid', timeout=90)
+                stopped = self.services()
+                if any(stopped.get(name, {}).get('State') == 'running' for name in ('github-broker', 'squid')):
+                    raise Error('Stop not verified.')
+                recovery = 'Broker and Squid stopped to deny egress.'
+            except Error:
+                recovery = 'STOP FAILED: live access is unknown; stop Docker services manually before recovery.'
+            raise Error('Log policy saved but live application not verified. ' + recovery +
+                        ' Fix Docker/configuration, then run ./devloop start and ./devloop github --log-hosts status.') from None
+
     def workflow_publication(self, action):
         if action != 'status':
             with self.administration():
@@ -493,7 +700,9 @@ class DevLoop:
         except Error:
             return 'unavailable'
 
-    def github(self, setup=False, start=False, check=False, proposal_test=False, workflows=None):
+    def github(self, setup=False, start=False, check=False, proposal_test=False, workflows=None, log_hosts=None):
+        if log_hosts is not None:
+            return self.log_hosts(log_hosts)
         if workflows is not None:
             return self.workflow_publication(workflows)
         store = AppSettings()
@@ -536,6 +745,7 @@ class DevLoop:
             self.require_running('hermes', 'squid')
             with self.administration():
                 self.dc('--profile', 'github', 'build', 'github-broker', capture=False, timeout=None)
+                self.prepare_log_start()
                 self.dc('--profile', 'github', 'up', '-d', '--wait', '--wait-timeout', '60', 'github-broker', capture=False, timeout=90)
                 self.dc('exec', '-T', 'hermes', '/opt/hermes/.venv/bin/python', '-I', '-', data=GITHUB_MCP_CONFIGURE)
                 (self.control / 'github-enabled').write_text('enabled\n')
@@ -553,6 +763,7 @@ class DevLoop:
 
     def start_services(self):
         self.runtime_check()
+        self.prepare_log_start()
         if not (self.root / "runtime/reference/hermes-dev-loop/.devloop-reference.json").is_file():
             self.refresh_reference()
         self.dc("up", "-d", capture=False, timeout=120)
@@ -754,6 +965,7 @@ class DevLoop:
         with self.administration():
             self.refresh_reference()
             self.dc("build", capture=False, timeout=None)
+            self.prepare_log_start()
             self.dc("up", "-d", "--force-recreate", capture=False, timeout=120)
             self.dc("up", "-d", "--wait", "--wait-timeout", "60", "squid", "hermes", capture=False, timeout=90)
             if (self.control / 'github-enabled').is_file():
@@ -787,6 +999,7 @@ def parser():
             action.add_argument("--checkout", action="store_true", help="Fetch the reference commit into a new writable /workspace checkout; preserves existing work")
         elif name == "github":
             group = action.add_mutually_exclusive_group()
+            group.add_argument('--log-hosts', choices=('enable', 'refresh', 'disable', 'status'), help='Host-only exact log hosts: opt in to GitHub metadata updates on startup, refresh LKG, disable or inspect saved/live state')
             group.add_argument("--workflows", choices=('enable', 'disable', 'status'), help="Host-only workflow publication control; no remote GitHub changes")
             group.add_argument("--setup", action="store_true", help="Guide local App ID and PEM-file import; no tokens or remote writes")
             group.add_argument("--start", action="store_true", help="Build/start the isolated broker and register its MCP endpoint in Hermes")

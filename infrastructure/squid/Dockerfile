@@ -4,4 +4,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends squid \
     && groupadd --gid 1000 proxy-runtime \
     && useradd --uid 1000 --gid 1000 --no-create-home proxy-runtime
 USER 1000:1000
+ENTRYPOINT ["/bin/sh", "/etc/squid/devloop/entrypoint.sh"]
 CMD ["squid", "-N", "-f", "/etc/squid/devloop/squid.conf"]

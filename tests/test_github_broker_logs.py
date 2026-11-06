@@ -29,6 +29,11 @@ class LogTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(url, str(caught.exception))
             self.assertNotIn('DO-NOT-EXPOSE', str(caught.exception))
 
+    async def test_unknown_host_advises_human_refresh_without_authorizing(self):
+        from job_logs import Downloader
+        with self.assertRaisesRegex(PolicyError, './devloop github --log-hosts refresh'):
+            Downloader().validate_url(URL)
+
     async def test_separate_client_disables_environment_auth_cookies_redirects_and_forces_proxy_tls(self):
         from job_logs import Downloader
         observed = []

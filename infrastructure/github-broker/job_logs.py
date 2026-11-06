@@ -62,7 +62,7 @@ class Downloader:
                     or any(ord(c) <= 32 or ord(c) >= 127 or c == '\\' for c in url)):
                 raise ValueError()
         except (ValueError, TypeError, AttributeError):
-            raise PolicyError('Log URL rejected by exact-host HTTPS policy; owner activation may be needed.') from None
+            raise PolicyError('Log URL rejected by exact-host HTTPS policy; ask the host owner to check ./devloop github --log-hosts status and, if opted in, ./devloop github --log-hosts refresh.') from None
 
     async def download(self, url, start_line=1, lines=100, tail=False):
         self.validate_url(url)
