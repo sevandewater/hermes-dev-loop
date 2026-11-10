@@ -83,4 +83,5 @@ def main():
     print("Approved-name private destination denied; counterfactual control reached canary")
 
 
-main()
+if __name__ == '__main__':
+    main()
