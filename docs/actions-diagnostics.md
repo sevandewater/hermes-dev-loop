@@ -156,14 +156,18 @@ The initial 176-test result preceded review fixes. Five test-first regressions n
 exercise deeply nested JSON startup fallback, invalid DNS lengths, oversized
 metadata/cache denial and the reviewed default-deny rebuild-before-enable migration.
 
-Still pending after reviewed merge and separately approved host activation:
-image builds, real Squid parse/empty-ACL behavior, broker access plus agent denial
-to selected storage hosts, private-resolution denial, and bounded real log reads
-for failed run **40395117019** and successful run **40395474454**, **attempt 1**.
-Retain exact run/job/reported SHA and completion evidence privately; never publish
-raw logs or signed URLs. Do not trigger/rerun workflows. Independent fresh-context
-review is required before publication. Issues #22 and #13 stay open until their
-live acceptance is qualified; source PRs use non-closing references.
+The initial source-phase checklist included image builds, actual Squid
+parse/empty-ACL behavior, broker/agent storage egress, private-resolution denial,
+and bounded real log reads for failed run **40395117019** and successful run
+**40395474454**, **attempt 1**. Subsequent live broker log reads and active-host
+agent **403** checks were completed separately; this isolated helper neither
+replaces nor invalidates that evidence. Its remaining host qualification is the
+actual isolated parse/403/200/hit-count matrix below, with production runtime
+correlation/enforcement a separate unresolved boundary. Retain exact
+run/job/reported SHA and completion evidence privately; never publish raw logs or
+signed URLs. Do not trigger/rerun workflows. Independent fresh-context review is
+required before publication. Issues #22 and #13 remain open for their outstanding
+acceptance criteria; source PRs use non-closing references.
 
 ### Isolated broker network canary (host-only, no rebuild)
 
@@ -177,18 +181,27 @@ python3 scripts/check_network_canary.py
 This streams the reviewed helper through `docker compose exec -T squid`; it does
 not restart, recreate, rebuild, fetch metadata, change settings, or edit live DNS,
 listeners or ACLs. Do not run policy administration concurrently. An empty or
-invalid process-loaded `/run/github-log-hosts.txt` fails explicitly: a plausible
-fixture hostname is never substituted for actual loaded membership. The helper
-selects an exact numbered storage member and validates the narrow regex and DNS
-length bounds before using it. Source changes to these helpers need no image rebuild.
+invalid on-disk startup snapshot `/run/github-log-hosts.txt` fails explicitly: a
+plausible fixture hostname is never substituted. The helper selects an exact
+numbered storage member and validates the narrow regex and DNS length bounds
+before using it. It freezes those bytes in a temporary ACL for all isolated
+instances. File equality before/after establishes only unchanged on-disk inputs,
+not which configuration the production process loaded or its current enforcement.
+Every PASS is explicitly **ISOLATED**; production runtime correlation/enforcement
+remains pending. Source changes to these helpers need no image rebuild.
 
 Inside the running container it creates temporary files, separate loopback-only
-Squid listeners on ephemeral ports, and a TCP canary at `127.0.0.2:443` (failure to
-bind fails the check). Loopback is classified as **github_broker**, not Hermes;
-the original Hermes/pypi helper invoked by `tests/security.py` remains unchanged
-in behavior. A temporary hosts file maps only the selected loaded storage name
-and `api.github.com` to that canary, avoiding external traffic for these probes.
-It parses each temporary configuration with the actual Squid binary, then checks:
+Squid listeners on ephemeral ports, and a distinct TCP destination per probe at
+`127.0.0.2` through `127.0.0.5`, port 443 (failure to bind fails the check).
+Loopback is classified as **github_broker**, not Hermes; the original Hermes/pypi
+helper invoked by `tests/security.py` remains unchanged in behavior. Each temporary
+hosts file maps only the selected snapshot storage name and `api.github.com` to
+its own canary, avoiding external traffic for these probes. The complete ordered
+`http_access` chain must match the reviewed chain, rejecting extra permissive
+rules or reordered denies. This is not general configuration equivalence: the
+behavioral conclusions cover only the tested source classification and mapped
+destinations. It parses each temporary configuration with the actual Squid binary,
+then checks:
 
 - Production private-destination deny retained: storage CONNECT gets **403** and
   **zero** canary connections.
@@ -206,8 +219,20 @@ until the bounded terminate/kill/reap sequence completes (at most four extra
 seconds), then propagates the deadline without replacing an earlier failure.
 The canary listener enables address reuse so TIME_WAIT from its active closes
 does not prevent an immediate rerun. Context-managed cleanup removes temporary
-files/listeners/processes on errors. Output is fixed, sanitized and
-bounded; Squid diagnostics are suppressed and temporary cache logs are deleted.
+files/listeners/processes on errors. Positive controls wait on a condition for a
+hit (two-second budget), not a scheduling sleep. Each probe owns its listener,
+counts and destination address. After its response, the temporary Squid is
+stopped/reaped while that listener is still accepting; listener teardown drains
+queued connections until a 50-ms idle accept timeout and joins within one second,
+then the final count is asserted. Zero means no connection observed during this
+bounded isolated probe and post-producer drain, **not** proof of indefinite
+absence. Old addresses are not reused by later probes, so late connections cannot
+be charged to another probe. Unrelated concurrent local traffic can fail the check;
+run it without other canaries. Output is fixed, sanitized and bounded: helper
+failures distinguish `parse`, `membership`, `bind`, `deadline`, `acl-mismatch`,
+`policy`, `input-changed`, `io` and `runtime`; wrapper failures distinguish
+`command-unavailable`, `command-deadline` and `command-failed`. No exception text,
+Squid stderr, config, URLs or logs are printed; temporary cache logs are deleted.
 No signed URLs, environment dumps, raw logs or runtime evidence are committed.
 
 The added unit fixtures exercise generation, broker classification, active-member
@@ -216,11 +241,18 @@ host command handling. They do **not** establish actual Squid acceptance. Neithe
 Squid nor Docker was available in the agent environment; execution of the above
 host command and its actual parse/403/200/hit-count evidence remain pending.
 Independent live broker/agent egress checks, public TLS control and real bounded
-log retrieval remain separate acceptance checks listed above. No workflows are triggered.
-The final local extension gate passed **197 tests**, including **16** canary
+log retrieval are separate acceptance evidence; completed broker log reads and
+active-host agent 403 checks are not relabeled pending by this helper.
+No workflows are triggered.
+The revised local extension gate passed **203 tests**, including **22** canary
 unit tests, under `/opt/hermes/.venv/bin/python -W error::ResourceWarning`;
-`scripts/verify.py --units-only` independently ran all **197** with no skips;
-wrapper `--help` and `git diff --check` passed.
+`scripts/verify.py --units-only` independently ran all **203** with no skips;
+wrapper `--help` and `git diff --check` passed. Review RED/GREEN cycles exposed
+unqualified PASS labels, the old 150-ms/shared-list delayed-hit mismatch,
+acceptance of reordered/extra permissive access rules, missing fixed diagnostic
+categories and failure to freeze the startup ACL bytes. Real-socket regressions
+also cover a connection arriving during producer shutdown and refusal of an old
+probe address while the next listener is active.
 Test-first RED runs exposed the old import-time listener and missing broker
 qualification/helper/wrapper paths before their corresponding GREEN runs.
 Review regressions first reproduced SIGALRM abandoning a real SIGTERM-resistant

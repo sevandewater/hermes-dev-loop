@@ -16,9 +16,11 @@ def main(argv=None):
     try:
         subprocess.run(command, input=(ROOT / 'tests/squid_broker_canary.py').read_text(),
                        text=True, stderr=subprocess.DEVNULL, timeout=60, check=True)
-    except (OSError, subprocess.SubprocessError):
-        print('FAIL network canary command; requires running Squid with enabled loaded storage policy',
-              file=sys.stderr)
+    except (OSError, subprocess.SubprocessError) as error:
+        category = ('command-deadline' if isinstance(error, subprocess.TimeoutExpired)
+                    else 'command-unavailable' if isinstance(error, OSError)
+                    else 'command-failed')
+        print(f'FAIL ISOLATED {category}', file=sys.stderr)
         return 1
     return 0
 

@@ -14,6 +14,13 @@ LOADED = Path('/run/github-log-hosts.txt')
 CONFIG = Path('/etc/squid/devloop/squid.conf')
 
 
+class CanaryFailure(RuntimeError, ValueError):
+    def __init__(self, category):
+        self.category = category if category in ('bind', 'acl-mismatch', 'policy', 'input-changed') else 'runtime'
+        super().__init__('Temporary broker ACL status/canary count mismatch'
+                         if self.category == 'acl-mismatch' else self.category)
+
+
 def select_host(text):
     hosts = [line for line in text.splitlines() if line and not line.startswith('#')]
     if not hosts or any(not re.fullmatch(r'productionresultssa[0-9]+\.blob\.core\.windows\.net', h)
@@ -24,6 +31,22 @@ def select_host(text):
 
 
 def make_policy(config, root, port, *, empty, protected):
+    access_chain = [
+        'http_access deny !hermes !github_broker',
+        'http_access deny !CONNECT',
+        'http_access deny !TLS_port',
+        'http_access deny hermes !approved',
+        'http_access deny github_broker !github_api !github_logs',
+        'http_access deny prohibited',
+        'http_access allow github_broker github_api',
+        'http_access allow github_broker github_logs',
+        'http_access allow hermes approved',
+        'http_access deny all',
+    ]
+    actual = [line.strip() for line in config.splitlines()
+              if line.strip().split()[:1] == ['http_access']]
+    if actual != access_chain:
+        raise CanaryFailure('policy')
     replacements = {
         'http_port 10.237.80.2:3128': f'http_port 127.0.0.1:{port}',
         'acl github_broker src 10.237.80.4/32': 'acl github_broker src 127.0.0.1/32',
@@ -34,37 +57,59 @@ def make_policy(config, root, port, *, empty, protected):
     for required in ('http_access deny prohibited', 'acl hermes src 10.237.80.3/32',
                      'acl github_logs dstdomain -n "/run/github-log-hosts.txt"'):
         if config.splitlines().count(required) != 1:
-            raise ValueError('Unexpected production Squid policy')
+            raise CanaryFailure('policy')
     for old, new in replacements.items():
         if config.splitlines().count(old) != 1:
-            raise ValueError('Unexpected production Squid policy')
+            raise CanaryFailure('policy')
         config = config.replace(old, new)
-    if empty:
-        config = config.replace('"/run/github-log-hosts.txt"', f'"{root}/empty-hosts"')
+    acl_file = 'empty-hosts' if empty else 'snapshot-hosts'
+    config = config.replace('"/run/github-log-hosts.txt"', f'"{root}/{acl_file}"')
     if not protected:
         config = config.replace('http_access deny prohibited', '# Counterfactual: private deny removed')
     return config + f'\nhosts_file {root}/hosts\n'
 
 
+class Hits(list):
+    """Probe-local counts with a bounded positive-control handshake."""
+
+    def __init__(self):
+        super().__init__()
+        self.condition = threading.Condition()
+
+    def record(self):
+        with self.condition:
+            self.append(1)
+            self.condition.notify_all()
+
+    def wait_for_hit(self, timeout=2):
+        with self.condition:
+            return self.condition.wait_for(lambda: len(self) >= 1, timeout=timeout)
+
+
 @contextmanager
-def listener(port=443):
-    hits = []
+def listener(port=443, address='127.0.0.2'):
+    hits = Hits()
     stop = threading.Event()
     # A separate loopback address avoids the existing pypi canary on 127.0.0.1.
     with socket.socket() as target:
         target.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        target.bind(('127.0.0.2', port))
+        try:
+            target.bind((address, port))
+        except OSError:
+            raise CanaryFailure('bind') from None
         target.listen(8)
         target.settimeout(0.05)
 
         def accept():
-            while not stop.is_set():
+            while True:
                 try:
                     client, _ = target.accept()
                 except socket.timeout:
+                    if stop.is_set():
+                        return
                     continue
                 with client:
-                    hits.append(1)
+                    hits.record()
 
         thread = threading.Thread(target=accept)
         thread.start()
@@ -143,25 +188,29 @@ def probe(port, host):
         raise RuntimeError('Invalid temporary Squid response') from None
 
 
-def qualify(config, host, root, hits):
-    (root / 'hosts').write_text(f'127.0.0.2 {host}\n127.0.0.2 api.github.com\n')
+def qualify(config, host, root):
     (root / 'empty-hosts').write_text('# deliberately empty\n')
-    for empty, protected in ((False, True), (False, False), (True, False)):
-        with socket.socket() as reservation:
-            reservation.bind(('127.0.0.1', 0))
-            port = reservation.getsockname()[1]
-        path = root / 'squid.conf'
-        path.write_text(make_policy(config, root, port, empty=empty, protected=protected))
-        with running_squid(path, port):
-            checks = [(host, 403 if protected or empty else 200)]
-            if empty:
-                checks.append(('api.github.com', 200))
-            for name, expected in checks:
-                before = len(hits)
+    checks = ((False, True, host, 403), (False, False, host, 200),
+              (True, False, host, 403), (True, False, 'api.github.com', 200))
+    for index, (empty, protected, name, expected) in enumerate(checks):
+        # A distinct loopback destination per probe: even a late connection
+        # cannot contaminate the next probe. Never recycle an address here.
+        address = f'127.0.0.{index + 2}'
+        with listener(address=address) as (_, hits):
+            (root / 'hosts').write_text(f'{address} {host}\n{address} api.github.com\n')
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1', 0))
+                port = reservation.getsockname()[1]
+            path = root / 'squid.conf'
+            path.write_text(make_policy(config, root, port, empty=empty, protected=protected))
+            with running_squid(path, port):
                 status = probe(port, name)
-                time.sleep(0.15)
-                if status != expected or len(hits) - before != (1 if expected == 200 else 0):
-                    raise RuntimeError('Temporary broker ACL status/canary count mismatch')
+                if status != expected or (expected == 200 and not hits.wait_for_hit()):
+                    raise CanaryFailure('acl-mismatch')
+            # First stop/reap the sole producer, then drain accepted/queued
+            # connections before checking counts. No fixed post-probe sleep.
+        if len(hits) != (1 if expected == 200 else 0):
+            raise CanaryFailure('acl-mismatch')
 
 
 def main():
@@ -176,21 +225,39 @@ def main():
         config = CONFIG.read_text()
         host = select_host(loaded)  # No fixture/fallback when policy is disabled.
         with tempfile.TemporaryDirectory(prefix='devloop-broker-canary-') as directory:
-            with listener() as (_, hits):
-                qualify(config, host, Path(directory), hits)
+            (Path(directory) / 'snapshot-hosts').write_text(loaded)
+            qualify(config, host, Path(directory))
         if LOADED.read_text() != loaded or CONFIG.read_text() != config:
-            raise RuntimeError('Live policy changed during qualification; evidence invalid')
+            raise CanaryFailure('input-changed')
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
-    print('PASS broker loaded-storage private deny: 403/0 hits; counterfactual: 200/1 hit')
-    print('PASS actual Squid empty ACL parse; storage: 403/0 hits; mapped API ACL control: 200/1 hit')
+    print('PASS ISOLATED on-disk startup snapshot: broker-classified storage private deny 403/0 hits; counterfactual 200/1 hit')
+    print('PASS ISOLATED actual Squid empty ACL parse; storage 403/0 hits; mapped API ACL control 200/1 hit')
     print('API control removes private deny in isolation; not public TLS or live broker evidence')
+    print('On-disk inputs unchanged; production runtime correlation/enforcement pending')
+
+
+def cli_main():
+    try:
+        main()
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        if isinstance(error, CanaryFailure):
+            category = error.category
+        elif isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+            category = 'deadline'
+        elif isinstance(error, subprocess.CalledProcessError):
+            category = 'parse'
+        elif isinstance(error, ValueError):
+            category = 'membership'
+        elif isinstance(error, OSError):
+            category = 'io'
+        else:
+            category = 'runtime'
+        print(f'FAIL ISOLATED {category}')
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-        print('FAIL isolated network qualification; check running Squid and enabled loaded storage policy')
-        raise SystemExit(1)
+    raise SystemExit(cli_main())

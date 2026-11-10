@@ -44,7 +44,7 @@ class BrokerPolicyTests(unittest.TestCase):
         self.assertIn('acl hermes src 10.237.80.3/32', policy)
         self.assertIn('http_access deny prohibited', policy)
         self.assertIn('http_port 127.0.0.1:12345', policy)
-        self.assertIn('"/run/github-log-hosts.txt"', policy)
+        self.assertIn('"/tmp/canary/snapshot-hosts"', policy)
         control = self.canary.make_policy(config, Path('/tmp/canary'), 12345,
                                           empty=False, protected=False)
         self.assertEqual(control, policy.replace('http_access deny prohibited',
@@ -54,6 +54,20 @@ class BrokerPolicyTests(unittest.TestCase):
         self.assertIn('"/tmp/canary/empty-hosts"', empty)
         self.assertNotIn('"/run/github-log-hosts.txt"', empty)
         self.assertEqual((ROOT / 'infrastructure/squid/squid.conf').read_text(), config)
+
+    def test_policy_rejects_reordered_chain_and_extra_permissive_rules(self):
+        config = (ROOT / 'infrastructure/squid/squid.conf').read_text()
+        mutations = (
+            config.replace('http_access deny prohibited\n', '').replace(
+                'http_access deny all', 'http_access deny prohibited\nhttp_access deny all'),
+            config.replace('http_access deny prohibited',
+                           'http_access allow all\nhttp_access deny prohibited'),
+            config + '\nhttp_access allow all\n',
+        )
+        for changed in mutations:
+            with self.subTest(policy=mutations.index(changed)), self.assertRaises(ValueError):
+                self.canary.make_policy(changed, Path('/tmp/canary'), 12345,
+                                        empty=False, protected=True)
 
     def test_policy_drift_rejected_instead_of_silent_substitution(self):
         config = (ROOT / 'infrastructure/squid/squid.conf').read_text()
@@ -65,6 +79,45 @@ class BrokerPolicyTests(unittest.TestCase):
 class ExecutionTests(unittest.TestCase):
     def setUp(self):
         self.canary = load('broker_canary', 'tests/squid_broker_canary.py')
+
+    def test_pass_labels_are_isolated_snapshot_not_production_enforcement(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as directory:
+            loaded = Path(directory) / 'loaded'
+            config = Path(directory) / 'config'
+            loaded.write_text('productionresultssa7.blob.core.windows.net\n')
+            config.write_text('snapshot')
+            with patch.object(self.canary, 'LOADED', loaded), \
+                    patch.object(self.canary, 'CONFIG', config), \
+                    patch.object(self.canary, 'listener') as target, \
+                    patch.object(self.canary, 'qualify'), redirect_stdout(io.StringIO()) as output:
+                target.return_value.__enter__.return_value = (('127.0.0.2', 443), [])
+                self.canary.main()
+        lines = output.getvalue().splitlines()
+        self.assertTrue(all(line.startswith('PASS ISOLATED ') for line in lines if line.startswith('PASS')))
+        self.assertIn('production runtime correlation/enforcement pending', output.getvalue())
+
+    def test_fixed_failure_categories_do_not_disclose_exception_details(self):
+        import io
+        import subprocess
+        from contextlib import redirect_stdout
+        self.assertTrue(callable(getattr(self.canary, 'cli_main', None)),
+                        'Missing sanitized category boundary')
+        failures = (
+            (ValueError('secret membership'), 'membership'),
+            (subprocess.CalledProcessError(1, 'secret parse'), 'parse'),
+            (TimeoutError('secret deadline'), 'deadline'),
+            (self.canary.CanaryFailure('bind'), 'bind'),
+            (self.canary.CanaryFailure('acl-mismatch'), 'acl-mismatch'),
+        )
+        for error, category in failures:
+            with self.subTest(category=category), \
+                    patch.object(self.canary, 'main', side_effect=error), \
+                    redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(self.canary.cli_main(), 1)
+            self.assertEqual(output.getvalue(), f'FAIL ISOLATED {category}\n')
 
     def test_new_execution_helpers_present(self):
         for name in ('listener', 'running_squid', 'qualify', 'main'):
@@ -189,7 +242,7 @@ class ExecutionTests(unittest.TestCase):
             def target():
                 yield ('127.0.0.2', 443), []
 
-            def fail(policy, chosen, root, hits):
+            def fail(policy, chosen, root):
                 self.assertEqual(chosen, host)
                 seen.append(root)
                 (root / 'evidence').write_text('temporary')
@@ -212,6 +265,85 @@ class ExecutionTests(unittest.TestCase):
                     self.canary.main()
                 listener.assert_not_called()
 
+    def test_delayed_hits_wait_for_event_and_use_probe_local_listeners(self):
+        import socket
+        import tempfile
+        import threading
+        from contextlib import contextmanager
+        addresses = []
+        workers = []
+        probes = []
+
+        @contextmanager
+        def squid(path, port):
+            root = path.parent
+            address = (root.joinpath('hosts').read_text().split()[0], 443)
+            addresses.append(address)
+            try:
+                yield
+            finally:
+                for worker in workers:
+                    worker.join(timeout=2)
+                    self.assertFalse(worker.is_alive())
+
+        def probe(port, host):
+            probes.append(host)
+            if len(probes) in (2, 4):
+                address = addresses[-1]
+
+                def delayed():
+                    threading.Event().wait(0.3)
+                    try:
+                        with socket.create_connection(address, timeout=1) as client:
+                            client.recv(1)
+                    except OSError:
+                        pass  # Legacy implementation has no per-probe listener.
+
+                worker = threading.Thread(target=delayed)
+                workers.append(worker)
+                worker.start()
+                return 200
+            return 403
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.canary, 'running_squid', squid), \
+                patch.object(self.canary, 'probe', probe):
+            self.canary.qualify((ROOT / 'infrastructure/squid/squid.conf').read_text(),
+                                'productionresultssa7.blob.core.windows.net', Path(directory))
+        self.assertEqual(len(addresses), 4)
+        self.assertEqual(len(set(addresses)), 4)
+
+    def test_late_denied_connection_during_producer_shutdown_is_not_missed(self):
+        import socket
+        import tempfile
+        from contextlib import contextmanager
+
+        @contextmanager
+        def squid(path, port):
+            yield
+            address = (path.parent.joinpath('hosts').read_text().split()[0], 443)
+            # Arrives after the 403 probe returns, before producer reap finishes.
+            with socket.create_connection(address, timeout=1) as client:
+                self.assertEqual(client.recv(1), b'')
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(self.canary, 'running_squid', squid), \
+                patch.object(self.canary, 'probe', return_value=403):
+            with self.assertRaisesRegex(RuntimeError, 'status/canary count'):
+                self.canary.qualify((ROOT / 'infrastructure/squid/squid.conf').read_text(),
+                                    'productionresultssa7.blob.core.windows.net', Path(directory))
+
+    def test_closed_probe_address_cannot_charge_next_listener(self):
+        import socket
+        with self.canary.listener(port=0, address='127.0.0.2') as (old, _):
+            pass
+        with self.canary.listener(port=old[1], address='127.0.0.3') as (current, hits):
+            with self.assertRaises(OSError):
+                socket.create_connection(old, timeout=0.1)
+            with socket.create_connection(current, timeout=1) as client:
+                self.assertEqual(client.recv(1), b'')
+        self.assertEqual(hits, [1])
+
     def test_qualify_rejects_denial_without_reachable_control(self):
         import tempfile
         from contextlib import contextmanager
@@ -226,7 +358,7 @@ class ExecutionTests(unittest.TestCase):
                 patch.object(self.canary, 'probe', return_value=403):
             with self.assertRaisesRegex(RuntimeError, 'status/canary count'):
                 self.canary.qualify((ROOT / 'infrastructure/squid/squid.conf').read_text(),
-                                    'productionresultssa7.blob.core.windows.net', Path(directory), [])
+                                    'productionresultssa7.blob.core.windows.net', Path(directory))
 
     def test_qualify_empty_policy_has_reachable_api_control(self):
         import tempfile
@@ -235,17 +367,20 @@ class ExecutionTests(unittest.TestCase):
         config = (ROOT / 'infrastructure/squid/squid.conf').read_text()
         policies = []
         probes = []
-        hits = []
+        addresses = []
 
         @contextmanager
         def squid(path, port):
             policies.append(path.read_text())
+            addresses.append((path.parent.joinpath('hosts').read_text().split()[0], 443))
             yield
 
         def probe(port, host):
             probes.append(host)
             if len(probes) in (2, 4):
-                hits.append(1)
+                import socket
+                with socket.create_connection(addresses[-1], timeout=1) as client:
+                    self.assertEqual(client.recv(1), b'')
                 return 200
             return 403
 
@@ -253,11 +388,11 @@ class ExecutionTests(unittest.TestCase):
                 patch.object(self.canary, 'running_squid', squid), \
                 patch.object(self.canary, 'probe', probe):
             root = Path(directory)
-            self.canary.qualify(config, 'productionresultssa7.blob.core.windows.net', root, hits)
+            self.canary.qualify(config, 'productionresultssa7.blob.core.windows.net', root)
             self.assertEqual((root / 'empty-hosts').read_text(), '# deliberately empty\n')
-            self.assertIn('127.0.0.2 api.github.com', (root / 'hosts').read_text())
+            self.assertIn('127.0.0.5 api.github.com', (root / 'hosts').read_text())
         self.assertEqual(probes, ['productionresultssa7.blob.core.windows.net'] * 3 + ['api.github.com'])
-        self.assertEqual(len(policies), 3)
+        self.assertEqual(len(policies), 4)
         self.assertIn('http_access deny prohibited', policies[0])
         self.assertNotIn('http_access deny prohibited', policies[1])
         self.assertIn('/empty-hosts', policies[2])
@@ -292,6 +427,10 @@ class WrapperTests(unittest.TestCase):
                     redirect_stderr(io.StringIO()) as output:
                 self.assertEqual(self.wrapper.main([]), 1)
             self.assertNotIn('private detail', output.getvalue())
+            category = ('command-deadline' if isinstance(error, subprocess.TimeoutExpired)
+                        else 'command-unavailable' if isinstance(error, OSError)
+                        else 'command-failed')
+            self.assertEqual(output.getvalue(), f'FAIL ISOLATED {category}\n')
 
     def test_unknown_arguments_rejected_without_docker(self):
         import io
