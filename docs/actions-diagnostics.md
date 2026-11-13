@@ -142,7 +142,60 @@ approved names resolving privately—are unchanged. The agent allowlist, downloa
 proxy/TLS/auth isolation and all download bounds are unchanged. No host Docker or
 credential authority is granted to the agent.
 
-## Verification and remaining host checks
+## Verification and qualification evidence
+
+### Current qualification for #22 / #13 (2026-11-10 UTC)
+
+The owner-reported host results below complete the agreed bounded network
+qualification alongside the earlier live diagnostics evidence. They do **not**
+establish production runtime policy correlation/enforcement. Refs
+[#22](https://github.com/sevandewater/hermes-dev-loop/issues/22) and
+[#13](https://github.com/sevandewater/hermes-dev-loop/issues/13): final acceptance
+reconciliation and human closure follow documentation review/merge; this change
+uses non-closing references, not automatic closure or a new host-test requirement.
+
+- **Live diagnostics (2026-11-07):** exact-SHA discovery and run/job reads agreed
+  on the identities and failure/success below. Both log reads used **attempt 1**
+  and returned **25 lines**, `true_tail=true`, `input_complete=true`, and no
+  limits reached. Input byte counts are shown, not raw log content.
+
+  | Observed run conclusion | Run / job | Reported SHA | Input bytes |
+  | --- | --- | --- | --- |
+  | failure | [40395117019 / 121825989172](https://github.com/sevandewater/hermes-dev-loop/actions/runs/40395117019/job/121825989172) | `e324ad474e7e8a3111c6c857b7d41fe70d4e4e40` | 445876 |
+  | success | [40395474454 / 121827230023](https://github.com/sevandewater/hermes-dev-loop/actions/runs/40395474454/job/121827230023) | `220cf767dd1da769446ffd886258b5b90da013e1` | 443923 |
+
+  Evidence: [#22 live reads](https://github.com/sevandewater/hermes-dev-loop/issues/22#issuecomment-6699645008)
+  and [#13 diagnostics reconciliation](https://github.com/sevandewater/hermes-dev-loop/issues/13#issuecomment-6699645402).
+  Active main ruleset visibility exposed `unit-and-images`, integration `15368`;
+  classic branch protection remained unavailable. This is neither an
+  all-provider check result nor a merge-eligibility verdict.
+- **Host status and agent denial:** the owner reported healthy Squid/broker,
+  enabled policy with 140 effective hosts and saved/live policy agreement. That
+  is owner status evidence, not independent deployed-image identity proof.
+  The owner then supplied `productionresultssa0.blob.core.windows.net` from the
+  running broker policy; agent CONNECT to that exact active host returned
+  **403**, with approved public TLS control **200**. See
+  [#22 active-host evidence (2026-11-10)](https://github.com/sevandewater/hermes-dev-loop/issues/22#issuecomment-6756108175).
+- **Owner-run isolated canary (2026-11-10):** after
+  [PR #25](https://github.com/sevandewater/hermes-dev-loop/pull/25) merged, the
+  owner ran `python3 scripts/check_network_canary.py`. Actual isolated Squid
+  retained the private deny for broker-classified storage: **403/zero hits**;
+  removal of only that deny gave **200/exactly one hit**. Actual Squid parsed
+  the temporary empty storage ACL: storage **403/zero hits**, mapped API ACL
+  control **200/one hit**. The API control removes private deny in isolation;
+  it is **not public TLS or live broker evidence**. On-disk inputs were unchanged,
+  which does not prove what production Squid loaded or currently enforces.
+  The owner's [bounded-evidence review option](https://github.com/sevandewater/hermes-dev-loop/pull/25#pullrequestreview-5844576007)
+  permitted explicit isolated claims instead of runtime correlation; the
+  [final approval](https://github.com/sevandewater/hermes-dev-loop/pull/25#pullrequestreview-5848756078)
+  covered revision `1a5f3bfe6814e74c61d57ee54452423e9d53b9f5`, merged November 10.
+
+No workflows were triggered or rerun for this qualification. Only sanitized
+identities, completion metadata and bounded outcomes belong here; private/raw
+logs, signed URLs and runtime payloads remain outside the repository. The
+source-phase results below are historical, not newly executed checks.
+
+### Issue #22 historical source verification
 
 Issue #22 local source verification: the pinned-SDK suite and actual
 `scripts/verify.py --units-only` gate pass **181 tests**, including 26 host-policy
@@ -159,15 +212,16 @@ metadata/cache denial and the reviewed default-deny rebuild-before-enable migrat
 The initial source-phase checklist included image builds, actual Squid
 parse/empty-ACL behavior, broker/agent storage egress, private-resolution denial,
 and bounded real log reads for failed run **40395117019** and successful run
-**40395474454**, **attempt 1**. Subsequent live broker log reads and active-host
-agent **403** checks were completed separately; this isolated helper neither
-replaces nor invalidates that evidence. Its remaining host qualification is the
-actual isolated parse/403/200/hit-count matrix below, with production runtime
-correlation/enforcement a separate unresolved boundary. Retain exact
-run/job/reported SHA and completion evidence privately; never publish raw logs or
+**40395474454**, **attempt 1**. Subsequent live broker log reads, active-host
+agent **403** checks and the November 10 owner-run isolated parse/403/200/hit-count
+matrix are recorded in the current qualification section above. The isolated
+helper neither replaces nor invalidates the live evidence. Production runtime
+correlation/enforcement remains explicitly unproven, not an additional gate under
+the approved bounded qualification. Retain detailed evidence privately; publish
+only sanitized run/job/reported SHA and completion metadata, never raw logs or
 signed URLs. Do not trigger/rerun workflows. Independent fresh-context review is
-required before publication. Issues #22 and #13 remain open for their outstanding
-acceptance criteria; source PRs use non-closing references.
+required before publication; final issue reconciliation and human closure follow
+documentation review/merge. Source PRs use non-closing references.
 
 ### Isolated broker network canary (host-only, no rebuild)
 
@@ -238,11 +292,12 @@ No signed URLs, environment dumps, raw logs or runtime evidence are committed.
 The added unit fixtures exercise generation, broker classification, active-member
 selection, empty-policy controls, negative counterfactuals, failure cleanup and
 host command handling. They do **not** establish actual Squid acceptance. Neither
-Squid nor Docker was available in the agent environment; execution of the above
-host command and its actual parse/403/200/hit-count evidence remain pending.
-Independent live broker/agent egress checks, public TLS control and real bounded
-log retrieval are separate acceptance evidence; completed broker log reads and
-active-host agent 403 checks are not relabeled pending by this helper.
+Squid nor Docker was available in the agent source-phase environment. The owner
+subsequently exercised the above host command on **2026-11-10**, completing the
+actual isolated parse/403/200/hit-count matrix recorded above. This does not
+establish production runtime correlation/enforcement. Independent live
+broker/agent egress checks, public TLS control and real bounded log retrieval
+remain separate completed evidence, not conclusions of this helper.
 No workflows are triggered.
 The revised local extension gate passed **203 tests**, including **22** canary
 unit tests, under `/opt/hermes/.venv/bin/python -W error::ResourceWarning`;
@@ -279,9 +334,10 @@ Fixtures cover legacy text JSON and source-documented modern structured shapes;
 these are not live GitHub responses. Packaging tests inspect COPY/context wiring;
 they are not Docker builds. Independent fresh-context review precedes publication.
 
-After approved activation, run the existing read/denial discovery check and the
-new **read-only** helper against existing successful and failed runs, then a
-subsequent revision. Do not trigger or rerun workflows:
+For qualification after approved activation, the source proposal supplied the
+existing read/denial discovery check and this new **read-only** helper against
+existing successful and failed runs, then a subsequent revision. The dated
+completed reads are recorded above. Do not trigger or rerun workflows:
 
 ```sh
 python3 tests/check_project_actions.py --sha FULL_SHA --run-id RUN_ID --job-id JOB_ID --attempt ATTEMPT
@@ -291,10 +347,12 @@ It executes discovery, run/jobs/rules reads and a bounded log download, validate
 association, and prints numeric/enum evidence only—not diagnostics. Retain source
 revision, returned run/job/SHA/attempt and completion flags. Confirm nonzero real
 log bytes and, when available, complete true tails. Missing fixtures belong with
-CI workflow provisioning, not invented green results. App installation Actions
-read access, active rules visibility, successful/failed samples, real MIME/URL
-behavior, proxy controls, Docker build and deployment remain host checks until
-actually exercised. Existing PR/Metadata read permissions are used; no
-Administration, Actions write or Workflows write is needed. Rich checks/statuses,
-annotations, historical run summaries, source-App observations, synthetic-merge
-association and guaranteed step diagnostics are deferred to issue #15.
+CI workflow provisioning, not invented green results. At the source-proposal
+phase, App installation Actions read access, active rules visibility,
+successful/failed samples, real MIME/URL behavior, proxy controls, Docker build
+and deployment were host checks pending execution; this historical list does not
+supersede the dated evidence or expand its claims. Existing PR/Metadata read
+permissions are used; no Administration, Actions write or Workflows write is
+needed. Rich checks/statuses, annotations, historical run summaries, source-App
+observations, synthetic-merge association and guaranteed step diagnostics are
+deferred to issue #15.
