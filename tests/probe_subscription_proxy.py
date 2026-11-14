@@ -1,7 +1,7 @@
 """Reproduce upstream's proxy-environment limitation; not a security-boundary test.
 
 Runs the unmodified upstream transport function against two loopback HTTP listeners.
-Requires Python 3.11+ and aiohttp==3.14.3. No real credentials or provider calls.
+Requires Python 3.11+ and aiohttp==3.14.5. No real credentials or provider calls.
 """
 
 import argparse
@@ -45,8 +45,8 @@ def load_transport(checkout):
 
 
 async def probe(checkout):
-    if aiohttp.__version__ != "3.14.3":
-        raise RuntimeError("Use aiohttp==3.14.3 to match the reviewed upstream lockfile")
+    if aiohttp.__version__ != "3.14.5":
+        raise RuntimeError("Use aiohttp==3.14.5 to match the reviewed upstream lockfile")
     transport = load_transport(checkout)
     hits = {"direct": 0, "proxy": 0}
 

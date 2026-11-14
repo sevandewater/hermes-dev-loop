@@ -32,7 +32,7 @@ for orphan in (False, True):
         providers['nous'] = dummy
         pool['nous'] = []
     _save_auth_store({'version': 1, 'providers': providers, 'credential_pool': pool})
-    _write_shared_nous_state(dummy)
+    _write_shared_nous_state(dummy, renewal=False)
     assert _nous_shared_store_path().exists()
     if not orphan:
         assert NousPortalAdapter().is_authenticated()
