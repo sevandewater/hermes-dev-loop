@@ -69,7 +69,7 @@ this is deliberately not presented as the proposed Hermes deployment.
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git /tmp/hermes-upstream-review
-git -C /tmp/hermes-upstream-review checkout e55c2662f5ebfbd3a474ebf5e0e0c51187e70e39
+git -C /tmp/hermes-upstream-review checkout 3b421578588243f920886e6fe79a6faa87ea026e
 docker run --rm \
   --user 65532:65532 --cap-drop ALL \
   --security-opt no-new-privileges:true --read-only \
@@ -78,7 +78,7 @@ docker run --rm \
   --mount "type=bind,src=$PWD/tests,dst=/review,readonly" \
   --mount type=bind,src=/tmp/hermes-upstream-review,dst=/upstream,readonly \
   python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 sh -c \
-  'python -m pip install --no-cache-dir --disable-pip-version-check --target /tmp/deps aiohttp==3.14.3 && PYTHONPATH=/tmp/deps python /review/probe_subscription_proxy.py /upstream'
+  'python -m pip install --no-cache-dir --disable-pip-version-check --target /tmp/deps aiohttp==3.14.5 && PYTHONPATH=/tmp/deps python /review/probe_subscription_proxy.py /upstream'
 ```
 
 The aiohttp version matches the reviewed upstream lockfile. The diagnostic image
@@ -87,6 +87,11 @@ dependency setup is not a production image definition or a fully locked build;
 transitive Python dependencies are not pinned by this diagnostic.
 
 ## Result
+
+The command above now targets v0.23.1/aiohttp 3.14.5; the October result below
+is preserved history, not an execution of that updated command. The fresh
+source/target-dependency loopback result and still-pending image gates are in the
+[v0.23.1 upgrade evidence](../docs/hermes-v0231-upgrade.md).
 
 Executed on 2026-10-20 using Docker Engine 29.8.1, the image digest above, and
 aiohttp 3.14.3. The process exited with status 0 and printed:

@@ -236,12 +236,18 @@ From the repository root, as UID 1000:
 ```
 
 Images use a digest-pinned Python base and Hermes source commit
-`e55c2662f5ebfbd3a474ebf5e0e0c51187e70e39`. Python dependencies are installed
-from that source's frozen lockfile with MCP, PTY, and aiohttp extras. Separate
+`3b421578588243f920886e6fe79a6faa87ea026e` (stable v0.23.1). Python dependencies are installed
+from that source's frozen lockfile with `mcp`, `pty`, and `sms` extras. Separate
 Dockerfile targets share the pinned source/dependencies; the gateway omits the
 development OS toolchain. OS packages
 come from Debian's maintained repositories at build time; the complete OS
 package graph is not snapshot-pinned.
+
+Existing installations must follow the [v0.23.1 qualification and activation
+plan](docs/hermes-v0231-upgrade.md) before rebuilding against private state.
+Merge is not activation: config/session startup migrations can write persistent
+state, and source rollback alone cannot undo them. Issue #24 stays open until
+image, private-copy and host/live gates are recorded.
 
 Hermes starts as `sleep infinity`. The unauthenticated gateway also idles and
 reports unhealthy because inference is unavailable. Squid must become healthy
